@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3 uid="uid://c7ham3abkuxe2"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_7dm0k"]
+
+[node name="Main" type="Node3D"]
+
+[node name="TFXHairs" type="TFXHairs" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 18.8748, 2.69612, 29.2579)
+mesh = SubResource("BoxMesh_7dm0k")
