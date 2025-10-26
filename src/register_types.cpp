@@ -1,6 +1,8 @@
 #include "register_types.h"
 
-#include "tfx_bridge.h"
+#include "tressfx_node.h"
+#include "tressfx_character.h"
+#include "tressfx_collision_node.h"
 
 #include <gdextension_interface.h>
 #include <godot_cpp/core/defs.hpp>
@@ -12,8 +14,10 @@ void initialize_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
-
-	GDREGISTER_CLASS(TFXHairs);
+	// Register the new TressFX node wrappers
+	GDREGISTER_CLASS(TressFXHairNode);
+	GDREGISTER_CLASS(TressFXCollisionNode);
+	GDREGISTER_CLASS(TressFXCharacter);
 }
 
 void uninitialize_module(ModuleInitializationLevel p_level) {
