@@ -1,6 +1,8 @@
 #include "tressfx_collision_node.h"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/core/property_info.hpp>
+#include <godot_cpp/templates/list.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <vector>
@@ -37,7 +39,7 @@ void TressFXCollisionNode::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::INT, "numCellsInXAxis"), "set_num_cells_in_x", "get_num_cells_in_x");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collisionMargin"), "set_collision_margin", "get_collision_margin");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "mesh"), "set_mesh", "get_mesh");
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "followBone"), "set_follow_bone", "get_follow_bone");
+    // followBone is provided dynamically via _get_property_list so the inspector can present an up-to-date enum
 }
 
 TressFXCollisionNode::TressFXCollisionNode() {
@@ -59,6 +61,17 @@ void TressFXCollisionNode::_ready() {
     last_collision_description.followBone = followBone;
     last_collision_description.skeleton_node_path = String(skeleton_node_path);
 
+    // Validate bone existence
+    if (!skeleton_node_path.is_empty() && !followBone.is_empty()) {
+        Node *n = get_node<Node>(skeleton_node_path);
+        Skeleton3D *s = Object::cast_to<Skeleton3D>(n);
+        if (s) {
+            if (s->find_bone(followBone) == -1) {
+                 UtilityFunctions::push_warning(String("TressFXCollisionNode: Bone '") + followBone + String("' not found in skeleton!"));
+            }
+        }
+    }
+
     UtilityFunctions::print(String("TressFXCollisionNode::_ready() values: tfx_mesh_file='") + tfx_mesh_file + String("' numCellsInXAxis=") + String::num_int64(numCellsInXAxis) + String(" followBone='") + followBone + String("'"));
 
     Node *p = get_parent();
@@ -75,6 +88,47 @@ void TressFXCollisionNode::_ready() {
         }
         p = p->get_parent();
     }
+}
+
+void TressFXCollisionNode::set_skeleton_node_path(const NodePath &p) {
+    skeleton_node_path = p;
+    // Notify the editor to refresh property list so followBone enum is updated
+    notify_property_list_changed();
+}
+
+// Dynamic property list to expose `followBone` as an enum of bones when a skeleton is assigned
+void TressFXCollisionNode::_get_property_list(List<PropertyInfo> *p_list) const {
+    // First add any default properties by not interfering (we only add followBone here)
+    Array bones = const_cast<TressFXCollisionNode *>(this)->find_bones();
+
+    String hint;
+    for (int i = 0; i < (int)bones.size(); ++i) {
+        if (i > 0) hint += String(",");
+        hint += bones[i];
+    }
+
+    p_list->push_back(PropertyInfo(Variant::STRING, "followBone", PROPERTY_HINT_ENUM, hint));
+}
+
+bool TressFXCollisionNode::_set(const StringName &p_name, const Variant &p_value) {
+    String name = p_name;
+    if (name == "followBone") {
+        if (p_value.get_type() == Variant::STRING) {
+            followBone = p_value;
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+bool TressFXCollisionNode::_get(const StringName &p_name, Variant &r_ret) const {
+    String name = p_name;
+    if (name == "followBone") {
+        r_ret = followBone;
+        return true;
+    }
+    return false;
 }
 
 void TressFXCollisionNode::load_tfx_collision_asset() {

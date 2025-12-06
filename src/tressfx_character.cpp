@@ -35,6 +35,10 @@ void TressFXCharacter::_ready() {
             continue;
         }
     }
+
+    // Now that all children have registered their descriptions, 
+    // we can initialize the TressFX engine and load the assets.
+    load_all_assets();
 }
 
 void TressFXCharacter::register_hair_description(const TressFXHairNode::TressFXObjectDescription &desc) {

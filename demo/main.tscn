@@ -1,9 +1,18 @@
-[gd_scene load_steps=2 format=3 uid="uid://c7ham3abkuxe2"]
+[gd_scene load_steps=3 format=3 uid="uid://c7ham3abkuxe2"]
 
-[sub_resource type="BoxMesh" id="BoxMesh_7dm0k"]
+[ext_resource type="PackedScene" uid="uid://jaaxkayekveb" path="res://babylon.tscn" id="1_ig7tw"]
+
+[sub_resource type="Environment" id="Environment_ig7tw"]
+ambient_light_source = 2
 
 [node name="Main" type="Node3D"]
 
-[node name="TFXHairs" type="TFXHairs" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 18.8748, 2.69612, 29.2579)
-mesh = SubResource("BoxMesh_7dm0k")
+[node name="babylon" parent="." instance=ExtResource("1_ig7tw")]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(0.00321145, 0, 0.999995, 0, 1, 0, -0.999995, 0, 0.00321145, 1.59175, 0.483425, 0.282357)
+current = true
+fov = 51.2
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_ig7tw")

@@ -14,6 +14,7 @@ void initialize_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
+
 	// Register the new TressFX node wrappers
 	GDREGISTER_CLASS(TressFXHairNode);
 	GDREGISTER_CLASS(TressFXCollisionNode);

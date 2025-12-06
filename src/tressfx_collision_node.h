@@ -38,8 +38,13 @@ public:
     void set_follow_bone(const String &p) { followBone = p; }
     String get_follow_bone() const { return followBone; }
 
-    void set_skeleton_node_path(const NodePath &p) { skeleton_node_path = p; }
+    void set_skeleton_node_path(const NodePath &p);
     NodePath get_skeleton_node_path() const { return skeleton_node_path; }
+
+    // Dynamic property list support so the inspector can show a bone dropdown
+    void _get_property_list(List<PropertyInfo> *p_list) const;
+    bool _set(const StringName &p_name, const Variant &p_value);
+    bool _get(const StringName &p_name, Variant &r_ret) const;
 
     // Exposed API
     void load_tfx_collision_asset();
