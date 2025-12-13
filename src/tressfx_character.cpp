@@ -1,5 +1,6 @@
 #include "tressfx_character.h"
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/viewport.hpp>
 #include "tressfx_collision_node.h"
 #include "Simulation.h"
 
@@ -83,5 +84,34 @@ void TressFXCharacter::load_all_assets() {
         UtilityFunctions::print(String("   [") + String::num_int64(i) + String("] ") + d.tfx_mesh_file + String(" -> followBone: ") + d.followBone);
     }
 
+    m_pPPLL.reset(new TressFXPPLL);
+    m_pShortCut.reset(new TressFXShortCut);
     m_pSimulation.reset(new Simulation);
+
+    int width = 1920;
+    int height = 1080;
+
+    if (is_inside_tree()) {
+        Viewport* vp = get_viewport();
+        if (vp) {
+            Vector2i size = vp->call("get_size");
+            width = size.x;
+            height = size.y;
+        }
+    }
+
+    // Initialize PPLL
+    // nNodes and nodeSize.
+    // TressFX sample uses:
+    // int nNodes = width * height * 8; // Average 8 layers?
+    // int nodeSize = TRESSFX_DEFAULT_NODE_SIZE;
+    
+    int nNodes = width * height * 16; // Let's be generous
+    m_pPPLL->Initialize(width, height, nNodes, TRESSFX_DEFAULT_NODE_SIZE);
+    
+    // Initialize ShortCut
+    m_pShortCut->Initialize(width, height);
+    
+    // Initialize Simulation
+    m_pSimulation->Initialize();
 }

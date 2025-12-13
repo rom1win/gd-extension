@@ -68,7 +68,7 @@ struct EI_BindLayout
 struct EI_RenderTargetSet
 {
     ~EI_RenderTargetSet() {}
-    void SetResources(const EI_Resource** pResourcesArray) {}
+    // void SetResources(const EI_Resource** pResourcesArray) {}
 };
 
 class EI_GLTFTexturesAndBuffers {};
@@ -147,4 +147,4 @@ private:
     EI_CommandContext m_currentCommandBuffer;
 };
 
-inline EI_Device * GetDevice() { return nullptr; }
+EI_Device * GetDevice();

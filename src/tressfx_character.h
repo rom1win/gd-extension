@@ -5,6 +5,8 @@
 #include <godot_cpp/core/class_db.hpp>
 #include "tressfx_node.h"
 #include "Simulation.h"
+#include "TressFX/TressFXPPLL.h"
+#include "TressFX/TressFXShortCut.h"
 
 using namespace godot;
 
@@ -31,6 +33,8 @@ private:
     std::vector<TressFXHairNode::TressFXObjectDescription> m_hairDescriptions;
     std::vector<TressFXHairNode::TressFXCollisionMeshDescription> m_collisionDescriptions;
     std::unique_ptr<Simulation> m_pSimulation;
+    std::unique_ptr<TressFXPPLL> m_pPPLL;
+    std::unique_ptr<TressFXShortCut> m_pShortCut;
 };
 
 #endif // TRESSFX_CHARACTER_H

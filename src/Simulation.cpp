@@ -9,7 +9,6 @@ Simulation::~Simulation() {
 }
 
 void Simulation::Initialize() {
-    // TODO: Get the EI_Device instance (from a global or passed in)
-    // EI_Device* pDevice = GetDevice(); 
-    // m_tressFXSimulation->Initialize(pDevice);
+    EI_Device* pDevice = GetDevice(); 
+    m_tressFXSimulation->Initialize(pDevice);
 }
