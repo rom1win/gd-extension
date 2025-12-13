@@ -59,7 +59,9 @@ void TressFXCollisionNode::_ready() {
     last_collision_description.collisionMargin = collisionMargin;
     last_collision_description.mesh = mesh;
     last_collision_description.followBone = followBone;
-    last_collision_description.skeleton_node_path = String(skeleton_node_path);
+    // Store skeleton path relative to the character (not this node), so the character
+    // can reliably resolve it later regardless of where this node sits in the tree.
+    last_collision_description.skeleton_node_path = String();
 
     // Validate bone existence
     if (!skeleton_node_path.is_empty() && !followBone.is_empty()) {
@@ -78,6 +80,23 @@ void TressFXCollisionNode::_ready() {
     while (p) {
         TressFXCharacter *character = Object::cast_to<TressFXCharacter>(p);
         if (character) {
+            if (!skeleton_node_path.is_empty()) {
+                Node *sn = get_node_or_null(skeleton_node_path);
+                Skeleton3D *sk = Object::cast_to<Skeleton3D>(sn);
+                if (sk) {
+                    const NodePath rel = character->get_path_to(sk);
+                    last_collision_description.skeleton_node_path = String(rel);
+                    UtilityFunctions::print(
+                        String("TressFXCollisionNode: resolved skeleton for character: node_path='") + String(skeleton_node_path) +
+                        String("' character_path='") + String(rel) +
+                        String("' bone_count=") + String::num_int64(sk->get_bone_count()));
+                } else {
+                    UtilityFunctions::push_warning(String("TressFXCollisionNode: skeleton_node_path set but is not a Skeleton3D: ") + String(skeleton_node_path));
+                }
+            } else {
+                UtilityFunctions::print("TressFXCollisionNode: skeleton_node_path not set (collision will use character default skeleton if any)");
+            }
+
             // Only register if the mesh file is set
             if (!last_collision_description.tfx_mesh_file.is_empty()) {
                 character->register_collision_description(last_collision_description);
@@ -138,6 +157,7 @@ void TressFXCollisionNode::load_tfx_collision_asset() {
     last_collision_description.collisionMargin = collisionMargin;
     last_collision_description.mesh = mesh;
     last_collision_description.followBone = followBone;
+    // Keep this as node-relative; register_to_character will rewrite to character-relative.
     last_collision_description.skeleton_node_path = String(skeleton_node_path);
 
     UtilityFunctions::print(String("TressFXCollisionNode: created collision description: ") + last_collision_description.tfx_mesh_file);
@@ -146,6 +166,22 @@ void TressFXCollisionNode::load_tfx_collision_asset() {
 void TressFXCollisionNode::register_to_character(TressFXCharacter *character) {
     load_tfx_collision_asset();
     if (character) {
+        if (!skeleton_node_path.is_empty()) {
+            Node *sn = get_node_or_null(skeleton_node_path);
+            Skeleton3D *sk = Object::cast_to<Skeleton3D>(sn);
+            if (sk) {
+                const NodePath rel = character->get_path_to(sk);
+                last_collision_description.skeleton_node_path = String(rel);
+                UtilityFunctions::print(
+                    String("TressFXCollisionNode: register_to_character resolved skeleton: node_path='") + String(skeleton_node_path) +
+                    String("' character_path='") + String(rel) +
+                    String("' bone_count=") + String::num_int64(sk->get_bone_count()));
+            } else {
+                UtilityFunctions::push_warning(String("TressFXCollisionNode: skeleton_node_path set but is not a Skeleton3D: ") + String(skeleton_node_path));
+            }
+        } else {
+            UtilityFunctions::print("TressFXCollisionNode: register_to_character skeleton_node_path not set");
+        }
         if (!last_collision_description.tfx_mesh_file.is_empty()) {
             character->register_collision_description(last_collision_description);
         } else {

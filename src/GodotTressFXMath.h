@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AMD_Types.h"
+#include "TressFXCommon.h"
 #include <cstring>
 #include <cmath>
 #include <cfloat>

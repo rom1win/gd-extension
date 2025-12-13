@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "tressfx_node.h"
 #include "Simulation.h"
@@ -44,7 +45,9 @@ private:
     std::vector<std::unique_ptr<HairStrands>> m_hairStrands;
     std::vector<std::unique_ptr<CollisionMesh>> m_collisionMeshes;
 
-    std::unique_ptr<EI_Scene> m_scene;
+    // Each adapter needs a stable EI_Scene (and thus stable Skeleton3D pointer).
+    // Node-driven configuration should decide which skeleton is used.
+    std::vector<std::unique_ptr<EI_Scene>> m_adapterScenes;
 
     std::unique_ptr<Simulation> m_pSimulation;
     std::unique_ptr<TressFXPPLL> m_pPPLL;

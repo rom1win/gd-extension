@@ -1,6 +1,7 @@
 #include "tressfx_character.h"
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/skeleton3d.hpp>
 #include "tressfx_collision_node.h"
 #include "Simulation.h"
 #include "HairStrands.h"
@@ -96,7 +97,11 @@ void TressFXCharacter::register_collision_description(const TressFXHairNode::Tre
         }
     }
     m_collisionDescriptions.push_back(desc);
-    UtilityFunctions::print(String("TressFXCharacter: registered collision: ") + desc.tfx_mesh_file);
+    UtilityFunctions::print(
+        String("TressFXCharacter: registered collision: ") + desc.tfx_mesh_file +
+        String(" followBone='") + desc.followBone +
+        String("' skeleton_node_path='") + desc.skeleton_node_path +
+        String("'"));
 }
 
 void TressFXCharacter::load_all_assets() {
@@ -115,14 +120,37 @@ void TressFXCharacter::load_all_assets() {
         UtilityFunctions::print(String("   [") + String::num_int64(i) + String("] ") + d.tfx_mesh_file + String(" -> followBone: ") + d.followBone);
     }
 
-    // Increment 1: create adapter objects, but do not allocate GPU resources yet.
-    // This makes the LoadScene loop shape testable without a full EI_Device.
-    if (!m_scene) {
-        m_scene = std::make_unique<EI_Scene>();
+    // Node-driven skeleton selection:
+    // - Collision nodes can provide `skeleton_node_path`.
+    // - We treat the first valid one as the default skeleton for hair.
+    Skeleton3D* default_skeleton = nullptr;
+    String default_skeleton_path;
+    for (const auto& d : m_collisionDescriptions) {
+        if (d.skeleton_node_path.is_empty()) {
+            continue;
+        }
+        Node* node = get_node_or_null(NodePath(d.skeleton_node_path));
+        Skeleton3D* sk = Object::cast_to<Skeleton3D>(node);
+        if (sk) {
+            default_skeleton = sk;
+            default_skeleton_path = d.skeleton_node_path;
+            break;
+        }
+        UtilityFunctions::push_warning(String("TressFXCharacter: could not resolve Skeleton3D from collision skeleton_node_path: ") + d.skeleton_node_path);
+    }
+
+    if (default_skeleton) {
+        UtilityFunctions::print(
+            String("TressFXCharacter: default skeleton resolved from collision node: path='") + default_skeleton_path +
+            String("' bone_count=") + String::num_int64(default_skeleton->get_bone_count()));
+    } else {
+        UtilityFunctions::push_warning(
+            "TressFXCharacter: no default Skeleton3D resolved from collision nodes (bone skinning will be unavailable)");
     }
 
     m_hairStrands.clear();
     m_collisionMeshes.clear();
+    m_adapterScenes.clear();
 
     UtilityFunctions::print(String("TressFXCharacter: creating adapter objects..."));
 
@@ -140,8 +168,15 @@ void TressFXCharacter::load_all_assets() {
             String("' follow=") + String::num_int64(d.num_follow_hairs) +
             String(" tip=") + String::num(d.tip_separation, 3));
 
+        m_adapterScenes.push_back(std::make_unique<EI_Scene>());
+        m_adapterScenes.back()->set_skeleton(default_skeleton);
+
+        UtilityFunctions::print(
+            String("  HairStrands[") + String::num_int64(i) +
+            String("] skeleton=") + (default_skeleton ? String("OK") : String("NULL")));
+
         m_hairStrands.push_back(std::make_unique<HairStrands>(
-            /*scene=*/m_scene.get(),
+            /*scene=*/m_adapterScenes.back().get(),
             tfx.get_data(),
             tfxbone.get_data(),
             obj.get_data(),
@@ -165,8 +200,27 @@ void TressFXCharacter::load_all_assets() {
             String("' cells=") + String::num_int64(d.numCellsInXAxis) +
             String(" margin=") + String::num(d.collisionMargin, 3));
 
+        Skeleton3D* collision_skeleton = default_skeleton;
+        if (!d.skeleton_node_path.is_empty()) {
+            Node* node = get_node_or_null(NodePath(d.skeleton_node_path));
+            Skeleton3D* sk = Object::cast_to<Skeleton3D>(node);
+            if (sk) {
+                collision_skeleton = sk;
+            } else {
+                UtilityFunctions::push_warning(String("TressFXCharacter: collision skeleton_node_path is not a Skeleton3D: ") + d.skeleton_node_path);
+            }
+        }
+
+        m_adapterScenes.push_back(std::make_unique<EI_Scene>());
+        m_adapterScenes.back()->set_skeleton(collision_skeleton);
+
+        UtilityFunctions::print(
+            String("  CollisionMesh[") + String::num_int64(i) +
+            String("] skeleton=") + (collision_skeleton ? String("OK") : String("NULL")) +
+            String(" (path='") + d.skeleton_node_path + String("')"));
+
         m_collisionMeshes.push_back(std::make_unique<CollisionMesh>(
-            /*scene=*/m_scene.get(),
+            /*scene=*/m_adapterScenes.back().get(),
             /*renderPass=*/nullptr,
             name.get_data(),
             tfxmesh.get_data(),
