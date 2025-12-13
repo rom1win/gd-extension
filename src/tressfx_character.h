@@ -4,6 +4,7 @@
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "tressfx_node.h"
+#include "Simulation.h"
 
 using namespace godot;
 
@@ -29,6 +30,7 @@ public:
 private:
     std::vector<TressFXHairNode::TressFXObjectDescription> m_hairDescriptions;
     std::vector<TressFXHairNode::TressFXCollisionMeshDescription> m_collisionDescriptions;
+    std::unique_ptr<Simulation> m_pSimulation;
 };
 
 #endif // TRESSFX_CHARACTER_H

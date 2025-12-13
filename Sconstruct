@@ -13,8 +13,13 @@ env = SConscript("godot-cpp/SConstruct")
 # - LINKFLAGS are for linking flags
 
 # tweak this if you want to use different folders, or more folders, to store your source code in.
-env.Append(CPPPATH=["src/"])
+env.Append(CPPPATH=["src/", "TressFX/src/", "TressFX/src/TressFX/", "TressFX/src/Math/"])
+env.Append(CPPDEFINES=["TRESSFX_GODOT"])
 sources = Glob("src/*.cpp")
+sources += Glob("TressFX/src/TressFX/*.cpp")
+sources += Glob("TressFX/src/Math/*.cpp")
+# Exclude sample wrappers that depend on Cauldron/DirectX
+# sources += ["TressFX/src/Simulation.cpp", "TressFX/src/HairStrands.cpp", "TressFX/src/SDF.cpp"]
 
 if env["platform"] == "macos":
     library = env.SharedLibrary(

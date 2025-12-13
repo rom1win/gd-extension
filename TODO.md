@@ -45,7 +45,7 @@ The TressFX core library (files in `TressFX/src/TressFX/`) has a clean separatio
         - `AMD::float4x4 GetMVP()`
     - [x] Include `"GodotTressFXMath.h"` instead of `<DirectXMath.h>`.
     - [x] Ensure NO Cauldron headers are included.
-- [ ] Update `src/GodotEngineInterfaceImpl.h`.
+- [x] Update `src/GodotEngineInterfaceImpl.h`.
     - [x] Define the following classes:
         - `EI_Device` (Factory for resources/PSOs)
         - `EI_CommandContext` (Command recording)
@@ -58,22 +58,21 @@ The TressFX core library (files in `TressFX/src/TressFX/`) has a clean separatio
     - [x] Define typedef `EI_ResourceFormat`.
     - [x] Ensure `EI_Device` methods return `std::unique_ptr` as expected by TressFX.
     - [x] Ensure `EI_CommandContext` has methods like `SubmitBarrier`, `BindPSO`, `Dispatch`, `UpdateBuffer`, etc.
-    - [ ] **Verification**: The current implementation in `src/GodotEngineInterfaceImpl.h` contains stubs for all these classes. We will need to fill them in with actual Godot `RenderingDevice` calls later, but for compilation, they are sufficient.
-- [ ] Create `src/imgui.h` (Dummy).
-    - [ ] Create an empty file `src/imgui.h` to satisfy `TressFXSettings.h` dependency without pulling in the actual ImGui library.
-- [ ] Create `src/Simulation.h` and `src/Simulation.cpp`.
-    - [ ] **Explanation for creating a new file**: We cannot use the original `TressFX/src/Simulation.cpp` because it depends on `HairStrands.h/cpp`. `HairStrands.cpp` has a hard-coded dependency on `<DirectXMath.h>` (it includes it and uses `using namespace DirectX`). Since we must avoid DirectX dependencies for cross-platform compatibility (and cannot easily mock the entire DirectXMath library to satisfy the system include), we must provide our own implementation.
-    - [ ] Implement a Godot-compatible `Simulation` class that replaces the TressFX sample's `Simulation` class.
-    - [ ] It should wrap `TressFXSimulation` (the core class).
-    - [ ] It should NOT depend on Cauldron or DirectX.
-    - [ ] It should provide the `Initialize`, `Update`, `Draw` methods expected by the usage in `tressfx_character.cpp`.
-    - [ ] **Note**: `TressFXSimulation` (core) only depends on `EngineInterface.h` and `TressFXCommon.h`, so it is safe to use.
-- [ ] Update `src/tressfx_character.h`.
-    - [ ] Include `"Simulation.h"`.
-    - [ ] Add `std::unique_ptr<Simulation> m_pSimulation;` as a private member.
-
+    - [x] **Verification**: The current implementation in `src/GodotEngineInterfaceImpl.h` contains stubs for all these classes. We will need to fill them in with actual Godot `RenderingDevice` calls later, but for compilation, they are sufficient.
+- [x] Create `src/imgui.h` (Dummy).
+    - [x] Create an empty file `src/imgui.h` to satisfy `TressFXSettings.h` dependency without pulling in the actual ImGui library.
+- [x] Create `src/Simulation.h` and `src/Simulation.cpp`.
+    - [x] **Explanation for creating a new file**: We cannot use the original `TressFX/src/Simulation.cpp` because it depends on `HairStrands.h/cpp`. `HairStrands.cpp` has a hard-coded dependency on `<DirectXMath.h>` (it includes it and uses `using namespace DirectX`). Since we must avoid DirectX dependencies for cross-platform compatibility (and cannot easily mock the entire DirectXMath library to satisfy the system include), we must provide our own implementation.
+    - [x] Implement a Godot-compatible `Simulation` class that replaces the TressFX sample's `Simulation` class.
+    - [x] It should wrap `TressFXSimulation` (the core class).
+    - [x] It should NOT depend on Cauldron or DirectX.
+    - [x] It should provide the `Initialize`, `Update`, `Draw` methods expected by the usage in `tressfx_character.cpp`.
+    - [x] **Note**: `TressFXSimulation` (core) only depends on `EngineInterface.h` and `TressFXCommon.h`, so it is safe to use.
+- [x] Update `src/tressfx_character.h`.
+    - [x] Include `"Simulation.h"`.
+    - [x] Add `std::unique_ptr<Simulation> m_pSimulation;` as a private member.
 ### 3. Integration Wiring
-- [ ] Modify `TressFX/src/EngineInterface.h`.
+- [x] Modify `TressFX/src/EngineInterface.h`.
     - [x] Use `insert_edit` or manual replacement to wrap the `SceneGLTFImpl.h` include:
       ```cpp
       #ifndef TRESSFX_GODOT
@@ -88,17 +87,37 @@ The TressFX core library (files in `TressFX/src/TressFX/`) has a clean separatio
       ```
 
 ### 4. Build System Updates
-- [ ] Update `SConstruct`.
+- [x] Update `SConstruct`.
     - [x] Add `env.Append(CPPDEFINES=["TRESSFX_GODOT"])`.
     - [x] Ensure `CPPPATH` includes `src/` (where our Godot implementations live).
     - [x] EXCLUDE `TressFX/src/HairStrands.cpp`, `TressFX/src/Simulation.cpp`, `TressFX/src/SDF.cpp` from the build. These are sample-specific wrappers that depend on Cauldron/DirectX. We will implement our own logic in `src/`.
     - [x] Ensure `TressFXSample.cpp` is NOT compiled.
 
 ### 5. Compilation & Verification
-- [ ] Run `scons` to compile.
-- [ ] If errors persist about missing types or methods, check `EngineInterface.h` and `SceneGLTFImpl.h` again and update our Godot implementations.
-- [ ] Once it compiles, we have successfully removed the Cauldron dependency for the build.
+- [x] Run `scons` to compile.
+- [x] If errors persist about missing types or methods, check `EngineInterface.h` and `SceneGLTFImpl.h` again and update our Godot implementations.
+- [x] Once it compiles, we have successfully removed the Cauldron dependency for the build.
 
-### 6. Future Work (Runtime)
-- [ ] Implement `GodotTressFXWrapper` (or similar) in `src/` to orchestrate `TressFXSimulation` and `TressFXHairObject`.
+### 6. Runtime Initialization & Rendering Setup
+- [ ] Update `src/tressfx_character.h` to include rendering components.
+    - [ ] Include `"TressFX/TressFXPPLL.h"` and `"TressFX/TressFXShortCut.h"`.
+    - [ ] Add `std::unique_ptr<TressFXPPLL> m_pPPLL;` and `std::unique_ptr<TressFXShortCut> m_pShortCut;` as private members.
+- [ ] Update `src/tressfx_character.cpp` to initialize components.
+    - [ ] In `load_all_assets()` (or a new `initialize_tressfx()` method), instantiate the components:
+      ```cpp
+      m_pPPLL.reset(new TressFXPPLL);
+      m_pShortCut.reset(new TressFXShortCut);
+      m_pSimulation.reset(new Simulation);
+      ```
+    - [ ] Ensure `GetDevice()` can be called. We may need to instantiate a global `EI_Device` in `GodotEngineInterfaceImpl.cpp` and have `GetDevice()` return it.
+- [ ] Implement `EI_Device` and `EI_CommandContext` using Godot's `RenderingDevice`.
+    - [ ] This is the heavy lifting: mapping TressFX resource creation and command recording to Godot's RD API.
+- [ ] Implement `Simulation::Initialize`.
+    - [ ] Call `m_tressFXSimulation->Initialize(GetDevice())`.
+- [ ] Implement `HairStrands` loading loop.
+    - [ ] Port the loop from `TressFXSample::LoadScene` to `TressFXCharacter::load_all_assets`.
+    - [ ] This will require creating `HairStrands` objects (which we need to implement/port since we excluded the sample one).
+    - [ ] **Correction**: We excluded `HairStrands.cpp` because of DirectXMath. We need to create `src/GodotHairStrands.h/cpp` that implements the `HairStrands` logic using our `GodotTressFXMath.h`.
+
+### 7. Shader Management
 - [ ] Plan for Shader compilation/loading (HLSL to SPIR-V or Godot Shaders). TressFX uses HLSL, Godot uses SPIR-V/GLSL. We will need to handle this in `EI_Device::CreateComputeShaderPSO`.

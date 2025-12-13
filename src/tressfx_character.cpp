@@ -1,6 +1,7 @@
 #include "tressfx_character.h"
 #include <godot_cpp/variant/utility_functions.hpp>
 #include "tressfx_collision_node.h"
+#include "Simulation.h"
 
 using namespace godot;
 
@@ -81,4 +82,6 @@ void TressFXCharacter::load_all_assets() {
         const auto &d = m_collisionDescriptions[i];
         UtilityFunctions::print(String("   [") + String::num_int64(i) + String("] ") + d.tfx_mesh_file + String(" -> followBone: ") + d.followBone);
     }
+
+    m_pSimulation.reset(new Simulation);
 }
