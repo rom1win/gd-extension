@@ -5,6 +5,7 @@
 #include "Simulation.h"
 #include "HairStrands.h"
 #include "SDF.h"
+#include "GodotScene.h"
 
 using namespace godot;
 
@@ -54,9 +55,6 @@ void TressFXCharacter::_process(double delta) {
     m_time_seconds += delta;
 
     if (!m_pSimulation) {
-        if ((m_frame_index % 120) == 0) {
-            UtilityFunctions::print(String("TressFXCharacter: tick (no simulation yet) t=") + String::num(m_time_seconds));
-        }
         return;
     }
 
@@ -69,15 +67,6 @@ void TressFXCharacter::_process(double delta) {
     ctx.collisionMeshes.reserve(m_collisionMeshes.size());
     for (auto& c : m_collisionMeshes) {
         ctx.collisionMeshes.push_back(c.get());
-    }
-
-    // Throttled tick log (about 2x per second at 60 fps).
-    if (m_last_tick_log_time_seconds < 0.0 || (m_time_seconds - m_last_tick_log_time_seconds) >= 0.5) {
-        m_last_tick_log_time_seconds = m_time_seconds;
-        UtilityFunctions::print(
-            String("TressFXCharacter: tick t=") + String::num(m_time_seconds, 3) +
-            String(" hair=") + String::num_int64((int)ctx.hairStrands.size()) +
-            String(" coll=") + String::num_int64((int)ctx.collisionMeshes.size()));
     }
 
     // Until EI_Device and command submission are real, this is a safe no-op.
@@ -128,6 +117,10 @@ void TressFXCharacter::load_all_assets() {
 
     // Increment 1: create adapter objects, but do not allocate GPU resources yet.
     // This makes the LoadScene loop shape testable without a full EI_Device.
+    if (!m_scene) {
+        m_scene = std::make_unique<EI_Scene>();
+    }
+
     m_hairStrands.clear();
     m_collisionMeshes.clear();
 
@@ -148,7 +141,7 @@ void TressFXCharacter::load_all_assets() {
             String(" tip=") + String::num(d.tip_separation, 3));
 
         m_hairStrands.push_back(std::make_unique<HairStrands>(
-            /*scene=*/nullptr,
+            /*scene=*/m_scene.get(),
             tfx.get_data(),
             tfxbone.get_data(),
             obj.get_data(),
@@ -173,7 +166,7 @@ void TressFXCharacter::load_all_assets() {
             String(" margin=") + String::num(d.collisionMargin, 3));
 
         m_collisionMeshes.push_back(std::make_unique<CollisionMesh>(
-            /*scene=*/nullptr,
+            /*scene=*/m_scene.get(),
             /*renderPass=*/nullptr,
             name.get_data(),
             tfxmesh.get_data(),

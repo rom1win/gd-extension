@@ -6,6 +6,7 @@
 class EI_Scene;
 class EI_CommandContext;
 class TressFXHairObject;
+class TressFXAsset;
 
 // Godot-side adapter for the sample "HairStrands" glue type.
 // Intentionally minimal for now: it provides the API shape used by TressFX core
@@ -32,6 +33,7 @@ public:
 
 private:
     std::unique_ptr<TressFXHairObject> m_pStrands;
+    std::unique_ptr<TressFXAsset> m_asset;
     EI_Scene* m_pScene = nullptr;
     int m_skinNumber = 0;
 
