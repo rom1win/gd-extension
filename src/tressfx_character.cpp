@@ -1,5 +1,7 @@
 #include "tressfx_character.h"
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/skeleton3d.hpp>
 #include "tressfx_collision_node.h"
@@ -15,7 +17,14 @@ void TressFXCharacter::_bind_methods() {
     // Only expose load_all_assets to scripting for now. The register_* methods are
     // C++-only and accept POD structs that are not bindable to Variant automatically.
     ClassDB::bind_method(D_METHOD("load_all_assets"), &TressFXCharacter::load_all_assets);
-    // No properties for now
+
+    ClassDB::bind_method(D_METHOD("set_debug_draw_hair_lines", "enabled"), &TressFXCharacter::set_debug_draw_hair_lines);
+    ClassDB::bind_method(D_METHOD("get_debug_draw_hair_lines"), &TressFXCharacter::get_debug_draw_hair_lines);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw_hair_lines"), "set_debug_draw_hair_lines", "get_debug_draw_hair_lines");
+
+    ClassDB::bind_method(D_METHOD("set_debug_max_guide_strands", "max_strands"), &TressFXCharacter::set_debug_max_guide_strands);
+    ClassDB::bind_method(D_METHOD("get_debug_max_guide_strands"), &TressFXCharacter::get_debug_max_guide_strands);
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_max_guide_strands", PROPERTY_HINT_RANGE, "1,256,1"), "set_debug_max_guide_strands", "get_debug_max_guide_strands");
 }
 
 TressFXCharacter::TressFXCharacter() {}
@@ -248,4 +257,65 @@ void TressFXCharacter::load_all_assets() {
     m_pShortCut.reset();
     m_pSimulation.reset();
     UtilityFunctions::print("TressFXCharacter: GPU simulation disabled (EI_Device incomplete)");
+
+    refresh_debug_hair_lines();
+}
+
+void TressFXCharacter::set_debug_draw_hair_lines(bool enabled) {
+    m_debug_draw_hair_lines = enabled;
+    refresh_debug_hair_lines();
+}
+
+bool TressFXCharacter::get_debug_draw_hair_lines() const {
+    return m_debug_draw_hair_lines;
+}
+
+void TressFXCharacter::set_debug_max_guide_strands(int max_strands) {
+    if (max_strands < 1) {
+        max_strands = 1;
+    }
+    if (max_strands > 256) {
+        max_strands = 256;
+    }
+    m_debug_max_guide_strands = max_strands;
+    if (m_debug_draw_hair_lines) {
+        refresh_debug_hair_lines();
+    }
+}
+
+int TressFXCharacter::get_debug_max_guide_strands() const {
+    return m_debug_max_guide_strands;
+}
+
+void TressFXCharacter::refresh_debug_hair_lines() {
+    // Remove previous debug children (if any).
+    for (int i = get_child_count() - 1; i >= 0; --i) {
+        Node* c = get_child(i);
+        if (c && String(c->get_name()).begins_with("TressFXDebugLines")) {
+            remove_child(c);
+            c->queue_free();
+        }
+    }
+
+    if (!m_debug_draw_hair_lines) {
+        return;
+    }
+
+    // If assets haven't been loaded yet, do nothing; load_all_assets() will call refresh again.
+    if (m_hairStrands.empty()) {
+        return;
+    }
+
+    const int cap = std::min(m_debug_max_guide_strands, 256);
+    for (int i = 0; i < (int)m_hairStrands.size(); ++i) {
+        Ref<ArrayMesh> mesh = m_hairStrands[i]->CreateDebugLineMesh(/*guides_only=*/true, /*strand_limit=*/cap);
+        if (!mesh.is_valid()) {
+            continue;
+        }
+
+        MeshInstance3D* mi = memnew(MeshInstance3D);
+        mi->set_name(String("TressFXDebugLines_") + String::num_int64(i));
+        mi->set_mesh(mesh);
+        add_child(mi);
+    }
 }

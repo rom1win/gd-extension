@@ -1,9 +1,13 @@
 #include "HairStrands.h"
 
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/array_mesh.hpp>
+#include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_vector3_array.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <algorithm>
 #include <cstdio>
 
@@ -235,4 +239,65 @@ void HairStrands::UpdateBones(EI_CommandContext& context) {
     // Once EI_Scene exposes bone matrices in a TressFX-friendly format, we will:
     // - query skeleton matrices
     // - call m_pStrands->UpdateBoneMatrices(...)
+}
+
+godot::Ref<godot::ArrayMesh> HairStrands::CreateDebugLineMesh(bool guides_only, int strand_limit) const {
+    if (!m_asset) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    const int vps = (int)m_asset->m_numVerticesPerStrand;
+    if (vps < 2) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    const int total_strands = guides_only ? (int)m_asset->m_numGuideStrands : (int)m_asset->m_numTotalStrands;
+    int strands_to_draw = total_strands;
+    if (strand_limit > 0 && strand_limit < strands_to_draw) {
+        strands_to_draw = strand_limit;
+    }
+
+    // Each strand has (vps-1) segments; each segment contributes 2 vertices for line rendering.
+    const int segments_per_strand = vps - 1;
+    const int64_t total_vertices = (int64_t)strands_to_draw * (int64_t)segments_per_strand * 2;
+    if (total_vertices <= 0) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    godot::PackedVector3Array verts;
+    verts.resize(total_vertices);
+
+    int64_t out_i = 0;
+    for (int s = 0; s < strands_to_draw; ++s) {
+        const int base = s * vps;
+        for (int v = 0; v < vps - 1; ++v) {
+            const godot::Vector3 p0(m_asset->m_positions[base + v].x, m_asset->m_positions[base + v].y, m_asset->m_positions[base + v].z);
+            const godot::Vector3 p1(m_asset->m_positions[base + v + 1].x, m_asset->m_positions[base + v + 1].y, m_asset->m_positions[base + v + 1].z);
+            verts[(int)out_i++] = p0;
+            verts[(int)out_i++] = p1;
+        }
+    }
+
+    godot::Array arrays;
+    arrays.resize(godot::Mesh::ARRAY_MAX);
+    arrays[godot::Mesh::ARRAY_VERTEX] = verts;
+
+    godot::Ref<godot::ArrayMesh> mesh;
+    mesh.instantiate();
+    mesh->add_surface_from_arrays(godot::Mesh::PRIMITIVE_LINES, arrays);
+    return mesh;
+}
+
+int HairStrands::GetGuideStrandCount() const {
+    if (!m_asset) {
+        return 0;
+    }
+    return (int)m_asset->m_numGuideStrands;
+}
+
+int HairStrands::GetTotalStrandCount() const {
+    if (!m_asset) {
+        return 0;
+    }
+    return (int)m_asset->m_numTotalStrands;
 }

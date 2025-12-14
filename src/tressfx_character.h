@@ -38,6 +38,12 @@ public:
     // Trigger creation of the TressFX runtime objects (stub for now)
     void load_all_assets();
 
+    void set_debug_draw_hair_lines(bool enabled);
+    bool get_debug_draw_hair_lines() const;
+
+    void set_debug_max_guide_strands(int max_strands);
+    int get_debug_max_guide_strands() const;
+
 private:
     std::vector<TressFXHairNode::TressFXObjectDescription> m_hairDescriptions;
     std::vector<TressFXHairNode::TressFXCollisionMeshDescription> m_collisionDescriptions;
@@ -52,6 +58,12 @@ private:
     std::unique_ptr<Simulation> m_pSimulation;
     std::unique_ptr<TressFXPPLL> m_pPPLL;
     std::unique_ptr<TressFXShortCut> m_pShortCut;
+
+    // Path A (CPU-only): optional debug line rendering for strands.
+    bool m_debug_draw_hair_lines = false;
+    int m_debug_max_guide_strands = 256;
+
+    void refresh_debug_hair_lines();
 
     double m_time_seconds = 0.0;
     uint64_t m_frame_index = 0;

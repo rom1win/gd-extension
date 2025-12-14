@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 
+#include <godot_cpp/classes/array_mesh.hpp>
+
 class EI_Scene;
 class EI_CommandContext;
 class TressFXHairObject;
@@ -30,6 +32,14 @@ public:
     void TransitionSimToRendering(EI_CommandContext& context);
     void TransitionRenderingToSim(EI_CommandContext& context);
     void UpdateBones(EI_CommandContext& context);
+
+    // Path A (CPU-only bring-up): build a simple line mesh from the loaded asset positions.
+    // Coordinates are in the hair asset's local space (attach the MeshInstance as a child of the character).
+    // Returns null if the asset isn't loaded.
+    godot::Ref<godot::ArrayMesh> CreateDebugLineMesh(bool guides_only, int strand_limit) const;
+
+    int GetGuideStrandCount() const;
+    int GetTotalStrandCount() const;
 
 private:
     std::unique_ptr<TressFXHairObject> m_pStrands;
