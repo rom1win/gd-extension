@@ -1,41 +1,66 @@
 #pragma once
 
-#include <vector>
+// Godot-backed EngineInterface implementation (compute-first).
+// Keep this focused: implement only the pieces we need to bring up GPU compute.
+
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
+
 #include "TressFX/TressFXCommon.h"
 
-// Stub implementation for Godot
-// This file is included by EngineInterface.h, so it has access to EI_* types defined there.
+#include <godot_cpp/classes/rendering_device.hpp>
+#include <godot_cpp/variant/rid.hpp>
 
 typedef int EI_ResourceFormat;
 
-class EI_BindSet
-{
+class EI_BindSet {
 public:
-    ~EI_BindSet() {}
+    EI_BindSet() = default;
+    ~EI_BindSet();
+
+    godot::RID rid;
+    uint32_t set_index = 0;
+    godot::RenderingDevice* rd = nullptr;
 };
 
-class EI_PSO
-{
+class EI_PSO {
 public:
-    ~EI_PSO() {}
-    EI_BindPoint m_bp;
+    EI_PSO() = default;
+    ~EI_PSO();
+
+    EI_BindPoint m_bp = EI_BP_COMPUTE;
+    godot::RID shader;
+    godot::RID pipeline;
+    godot::RenderingDevice* rd = nullptr;
 };
 
-class EI_CommandContext
-{
+class EI_CommandContext {
 public:
-    void SubmitBarrier(int numBarriers, EI_Barrier * barriers) {}
-    void BindPSO(EI_PSO * pso) {}
-    void BindSets(EI_PSO * pso, int numBindSets, EI_BindSet ** bindSets) {}
-    void Dispatch(int numGroups) {}
-    void UpdateBuffer(EI_Resource * res, void * data) {}
-    void ClearUint32Image(EI_Resource* res, uint32_t value) {}
-    void ClearFloat32Image(EI_Resource* res, float value) {}
-    void DrawIndexedInstanced(EI_PSO& pso, EI_IndexedDrawParams& drawParams) {}
-    void DrawInstanced(EI_PSO& pso, EI_DrawParams& drawParams) {}
-    void PushConstants(EI_PSO * pso, int size, void * data) {}
+    EI_CommandContext() = default;
+
+    void set_rd(godot::RenderingDevice* p_rd) { rd = p_rd; }
+
+    void SubmitBarrier(int numBarriers, EI_Barrier* barriers);
+    void BindPSO(EI_PSO* pso);
+    void BindSets(EI_PSO* pso, int numBindSets, EI_BindSet** bindSets);
+    void Dispatch(int numGroups);
+    void UpdateBuffer(EI_Resource* res, void* data);
+    void ClearUint32Image(EI_Resource* res, uint32_t value);
+    void ClearFloat32Image(EI_Resource* res, float value);
+    void DrawIndexedInstanced(EI_PSO& pso, EI_IndexedDrawParams& drawParams);
+    void DrawInstanced(EI_PSO& pso, EI_DrawParams& drawParams);
+    void PushConstants(EI_PSO* pso, int size, void* data);
+
+    // Godot RD command list management
+    void BeginComputeIfNeeded();
+    void EndAndSubmit();
+
+private:
+    godot::RenderingDevice* rd = nullptr;
+    int64_t compute_list = -1;
+    EI_PSO* bound_pso = nullptr;
 };
 
 class EI_Marker
@@ -47,22 +72,30 @@ private:
     EI_CommandContext& m_ctx;
 };
 
-class EI_Resource
-{
+class EI_Resource {
 public:
-    EI_Resource() {}
-    ~EI_Resource() {}
+    EI_Resource() = default;
+    ~EI_Resource();
 
-    int GetHeight() const { return 0; }
-    int GetWidth() const { return 0; }
+    int GetHeight() const { return height; }
+    int GetWidth() const { return width; }
+
+    godot::RID rid;
+    uint32_t size_bytes = 0;
+    int width = 0;
+    int height = 0;
 
     EI_ResourceType m_ResourceType = EI_ResourceType::Undefined;
+    godot::RenderingDevice* rd = nullptr;
 };
 
-struct EI_BindLayout
-{
-    ~EI_BindLayout() {}
+struct EI_BindLayout {
+    ~EI_BindLayout() = default;
     EI_LayoutDescription description;
+
+    // In Vulkan/DX12 this is implicit by pipeline layout order.
+    // We assign it when a PSO is created and layouts are provided.
+    int set_index = -1;
 };
 
 struct EI_RenderTargetSet
@@ -79,21 +112,21 @@ class GLTFCommon;
 class EI_Device
 {
 public:
-    EI_Device() {}
-    ~EI_Device() {}
+    EI_Device();
+    ~EI_Device();
 
     EI_CommandContext& GetCurrentCommandContext() { return m_currentCommandBuffer; }
     
-    std::unique_ptr<EI_Resource> CreateBufferResource(const int structSize, const int structCount, const unsigned int flags, const char* name) { return std::make_unique<EI_Resource>(); }
-    std::unique_ptr<EI_Resource> CreateUint32Resource(const int width, const int height, const size_t arraySize, const char* name, uint32_t ClearValue = 0) { return std::make_unique<EI_Resource>(); }
-    std::unique_ptr<EI_Resource> CreateRenderTargetResource(const int width, const int height, const size_t channels, const size_t channelSize, const char* name, AMD::float4* ClearValues = nullptr) { return std::make_unique<EI_Resource>(); }
-    std::unique_ptr<EI_Resource> CreateDepthResource(const int width, const int height, const char* name) { return std::make_unique<EI_Resource>(); }
-    std::unique_ptr<EI_Resource> CreateResourceFromFile(const char* szFilename, bool useSRGB = false) { return std::make_unique<EI_Resource>(); }
-    std::unique_ptr<EI_Resource> CreateSampler(EI_Filter MinFilter, EI_Filter MaxFilter, EI_Filter MipFilter, EI_AddressMode AddressMode) { return std::make_unique<EI_Resource>(); }
+    std::unique_ptr<EI_Resource> CreateBufferResource(const int structSize, const int structCount, const unsigned int flags, const char* name);
+    std::unique_ptr<EI_Resource> CreateUint32Resource(const int width, const int height, const size_t arraySize, const char* name, uint32_t ClearValue = 0);
+    std::unique_ptr<EI_Resource> CreateRenderTargetResource(const int width, const int height, const size_t channels, const size_t channelSize, const char* name, AMD::float4* ClearValues = nullptr);
+    std::unique_ptr<EI_Resource> CreateDepthResource(const int width, const int height, const char* name);
+    std::unique_ptr<EI_Resource> CreateResourceFromFile(const char* szFilename, bool useSRGB = false);
+    std::unique_ptr<EI_Resource> CreateSampler(EI_Filter MinFilter, EI_Filter MaxFilter, EI_Filter MipFilter, EI_AddressMode AddressMode);
     
-    std::unique_ptr<EI_BindLayout> CreateLayout(const EI_LayoutDescription& description) { return std::make_unique<EI_BindLayout>(); }
+    std::unique_ptr<EI_BindLayout> CreateLayout(const EI_LayoutDescription& description);
 
-    std::unique_ptr<EI_BindSet> CreateBindSet(EI_BindLayout * layout, EI_BindSetDescription& bindSet) { return std::make_unique<EI_BindSet>(); }
+    std::unique_ptr<EI_BindSet> CreateBindSet(EI_BindLayout* layout, EI_BindSetDescription& bindSet);
 
     std::unique_ptr<EI_RenderTargetSet> CreateRenderTargetSet(const EI_ResourceFormat* pResourceFormats, const uint32_t numResources, const EI_AttachmentParams* AttachmentParams, float* clearValues) { return std::make_unique<EI_RenderTargetSet>(); }
     std::unique_ptr<EI_RenderTargetSet> CreateRenderTargetSet(const EI_Resource** pResourcesArray, const uint32_t numResources, const EI_AttachmentParams* AttachmentParams, float* clearValues) { return std::make_unique<EI_RenderTargetSet>(); }
@@ -102,12 +135,12 @@ public:
     std::unique_ptr<EI_GltfPbrPass> CreateGLTFPbrPass(EI_GLTFTexturesAndBuffers* pGLTFTexturesAndBuffers, EI_RenderTargetSet* renderTargetSet) { return std::make_unique<EI_GltfPbrPass>(); }
     std::unique_ptr<EI_GltfDepthPass> CreateGLTFDepthPass(EI_GLTFTexturesAndBuffers* pGLTFTexturesAndBuffers, EI_RenderTargetSet* renderTargetSet) { return std::make_unique<EI_GltfDepthPass>(); }
 
-    void BeginRenderPass(EI_CommandContext& commandContext, const EI_RenderTargetSet* pRenderPassSet, const wchar_t* pPassName, uint32_t width = 0, uint32_t height = 0) {}
-    void EndRenderPass(EI_CommandContext& commandContext) {}
-    void SetViewportAndScissor(EI_CommandContext& commandContext, uint32_t topX, uint32_t topY, uint32_t width, uint32_t height) {}
+    void BeginRenderPass(EI_CommandContext& commandContext, const EI_RenderTargetSet* pRenderPassSet, const wchar_t* pPassName, uint32_t width = 0, uint32_t height = 0);
+    void EndRenderPass(EI_CommandContext& commandContext);
+    void SetViewportAndScissor(EI_CommandContext& commandContext, uint32_t topX, uint32_t topY, uint32_t width, uint32_t height);
 
-    std::unique_ptr<EI_PSO> CreateComputeShaderPSO(const char * shaderName, const char * entryPoint, EI_BindLayout ** layouts, int numLayouts) { return std::make_unique<EI_PSO>(); }
-    std::unique_ptr<EI_PSO> CreateGraphicsPSO(const char * vertexShaderName, const char * vertexEntryPoint, const char * fragmentShaderName, const char * fragmentEntryPoint, EI_PSOParams& psoParams) { return std::make_unique<EI_PSO>(); }
+    std::unique_ptr<EI_PSO> CreateComputeShaderPSO(const char* shaderName, const char* entryPoint, EI_BindLayout** layouts, int numLayouts);
+    std::unique_ptr<EI_PSO> CreateGraphicsPSO(const char* vertexShaderName, const char* vertexEntryPoint, const char* fragmentShaderName, const char* fragmentEntryPoint, EI_PSOParams& psoParams);
 
     /* async compute */
     EI_CommandContext& GetComputeCommandContext() { return m_currentCommandBuffer; } // Reuse same for now
@@ -121,11 +154,18 @@ public:
     void OnCreate(void* hWnd, uint32_t numBackBuffers, bool enableValidation, const char* appName) {}
     void OnResize(uint32_t width, uint32_t height) {}
     void SetVSync(bool vSync) {}
-    void FlushGPU() {}
+    void FlushGPU();
     void OnDestroy() {}
     
     void OnBeginFrame(bool bDoAsync) {}
     void OnEndFrame() {}
+
+    // Convenience: one-shot compute validation of the Godot RenderingDevice backend.
+    // Safe to call multiple times; only the first call does work.
+    void RunSelfTestOnce();
+
+    // Minimal submission hook (used by self-test and later by simulation/render integration).
+    void EndAndSubmitCommandBuffer();
     
     EI_Resource* GetDepthBufferResource() { return nullptr; }
     EI_ResourceFormat GetDepthBufferFormat() { return 0; }
@@ -144,6 +184,9 @@ public:
     float GetAverageGpuTime() const { return 0.0f; }
 
 private:
+    godot::RenderingDevice* get_rd();
+    godot::RenderingDevice* m_local_rd = nullptr;
+
     EI_CommandContext m_currentCommandBuffer;
 };
 

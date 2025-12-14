@@ -3,6 +3,7 @@
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/skeleton3d.hpp>
 #include "tressfx_collision_node.h"
+#include "EngineInterface.h"
 #include "Simulation.h"
 #include "HairStrands.h"
 #include "SDF.h"
@@ -24,6 +25,11 @@ TressFXCharacter::~TressFXCharacter() {}
 void TressFXCharacter::_init() {}
 
 void TressFXCharacter::_ready() {
+    // One-shot compute backend sanity check.
+    if (EI_Device* device = GetDevice()) {
+        device->RunSelfTestOnce();
+    }
+
     // Register any existing child hair/collision nodes in case they were created
     // before this character (handles creation order in the editor).
     int cnt = get_child_count();
@@ -46,9 +52,9 @@ void TressFXCharacter::_ready() {
     // we can initialize the TressFX engine and load the assets.
     load_all_assets();
 
-    // Increment 1: enable per-frame ticking. The simulation path is still stubbed,
-    // but this wires the call order and ensures nothing crashes when enabled.
-    set_process(true);
+    // CPU-only bring-up: keep per-frame simulation disabled until the GPU backend
+    // (PPLL/ShortCut/Simulation) is fully implemented.
+    set_process(false);
 }
 
 void TressFXCharacter::_process(double delta) {
@@ -234,39 +240,11 @@ void TressFXCharacter::load_all_assets() {
         String("TressFXCharacter: adapters created hair=") + String::num_int64((int)m_hairStrands.size()) +
         String(" coll=") + String::num_int64((int)m_collisionMeshes.size()));
 
-    m_pPPLL.reset(new TressFXPPLL);
-    m_pShortCut.reset(new TressFXShortCut);
-    m_pSimulation.reset(new Simulation);
-
-    int width = 1920;
-    int height = 1080;
-
-    if (is_inside_tree()) {
-        Viewport* vp = get_viewport();
-        if (vp) {
-            Vector2i size = vp->call("get_size");
-            width = size.x;
-            height = size.y;
-        }
-    }
-
-    UtilityFunctions::print(String("TressFXCharacter: viewport size ") + String::num_int64(width) + String("x") + String::num_int64(height));
-
-    // Initialize PPLL
-    // nNodes and nodeSize.
-    // TressFX sample uses:
-    // int nNodes = width * height * 8; // Average 8 layers?
-    // int nodeSize = TRESSFX_DEFAULT_NODE_SIZE;
-    
-    int nNodes = width * height * 16; // Let's be generous
-    UtilityFunctions::print(String("TressFXCharacter: initializing PPLL nNodes=") + String::num_int64(nNodes));
-    m_pPPLL->Initialize(width, height, nNodes, TRESSFX_DEFAULT_NODE_SIZE);
-    
-    // Initialize ShortCut
-    UtilityFunctions::print(String("TressFXCharacter: initializing ShortCut"));
-    m_pShortCut->Initialize(width, height);
-    
-    // Initialize Simulation
-    UtilityFunctions::print(String("TressFXCharacter: initializing Simulation"));
-    m_pSimulation->Initialize();
+    // GPU bring-up is still in progress. PPLL/ShortCut/Simulation currently require
+    // texture/image resources that aren't implemented in EI_Device yet.
+    // Keep this CPU-only to avoid crashes.
+    m_pPPLL.reset();
+    m_pShortCut.reset();
+    m_pSimulation.reset();
+    UtilityFunctions::print("TressFXCharacter: GPU simulation disabled (EI_Device incomplete)");
 }
