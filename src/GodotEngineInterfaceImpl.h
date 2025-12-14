@@ -164,6 +164,10 @@ public:
     // Safe to call multiple times; only the first call does work.
     void RunSelfTestOnce();
 
+    // One-shot validation using the *main* RenderingDevice, scheduled on the render thread.
+    // This is the supported way to use RenderingServer::get_rendering_device() without thread violations.
+    void RunMainRDSelfTestOnce();
+
     // Minimal submission hook (used by self-test and later by simulation/render integration).
     void EndAndSubmitCommandBuffer();
     

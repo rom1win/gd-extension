@@ -28,6 +28,7 @@ void TressFXCharacter::_ready() {
     // One-shot compute backend sanity check.
     if (EI_Device* device = GetDevice()) {
         device->RunSelfTestOnce();
+        device->RunMainRDSelfTestOnce();
     }
 
     // Register any existing child hair/collision nodes in case they were created
