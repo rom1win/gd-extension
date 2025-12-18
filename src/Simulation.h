@@ -32,4 +32,5 @@ public:
 private:
     std::unique_ptr<TressFXSimulation> m_tressFXSimulation;
     bool m_simulationRunning = false;
+    bool m_acquired_global_layouts = false;
 };

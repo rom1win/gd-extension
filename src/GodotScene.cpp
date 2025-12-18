@@ -31,27 +31,36 @@ static XMMATRIX transform3d_to_xmmatrix(const godot::Transform3D& t) {
 
     XMMATRIX m;
 
-    // Basis axes are column vectors in Godot (x, y, z).
-    // We store them as rows here (common in CPU-side math usage). If a later stage
-    // shows a transposition issue, this is the single place to adjust.
-    m.m[0][0] = b.get_column(0).x;
-    m.m[0][1] = b.get_column(0).y;
-    m.m[0][2] = b.get_column(0).z;
-    m.m[0][3] = 0.0f;
+    // Our XMMATRIX + XMVector4Transform implementation assumes row-vector multiplication:
+    //   v' = v * M
+    // with translation stored in the last row (m[3][0..2]).
+    // Godot's Basis columns are the local axes in parent space, so they map to matrix columns.
+    const godot::Vector3 x = b.get_column(0);
+    const godot::Vector3 y = b.get_column(1);
+    const godot::Vector3 z = b.get_column(2);
 
-    m.m[1][0] = b.get_column(1).x;
-    m.m[1][1] = b.get_column(1).y;
-    m.m[1][2] = b.get_column(1).z;
-    m.m[1][3] = 0.0f;
-
-    m.m[2][0] = b.get_column(2).x;
-    m.m[2][1] = b.get_column(2).y;
-    m.m[2][2] = b.get_column(2).z;
-    m.m[2][3] = 0.0f;
-
+    // Column 0 (X axis)
+    m.m[0][0] = x.x;
+    m.m[1][0] = x.y;
+    m.m[2][0] = x.z;
     m.m[3][0] = o.x;
+
+    // Column 1 (Y axis)
+    m.m[0][1] = y.x;
+    m.m[1][1] = y.y;
+    m.m[2][1] = y.z;
     m.m[3][1] = o.y;
+
+    // Column 2 (Z axis)
+    m.m[0][2] = z.x;
+    m.m[1][2] = z.y;
+    m.m[2][2] = z.z;
     m.m[3][2] = o.z;
+
+    // Column 3
+    m.m[0][3] = 0.0f;
+    m.m[1][3] = 0.0f;
+    m.m[2][3] = 0.0f;
     m.m[3][3] = 1.0f;
 
     return m;
@@ -90,8 +99,13 @@ std::vector<XMMATRIX>& EI_Scene::GetWorldSpaceSkeletonMats(int /*skinNumber*/) {
     m_cached_world_mats.resize(bone_count);
 
     for (int32_t i = 0; i < bone_count; ++i) {
+        // Return skinning matrices: current_pose * inverse(rest_pose).
+        // This matches the convention used by the original TressFX glue and gives
+        // stable deformation for our current math packing.
         const godot::Transform3D pose = m_skeleton->get_bone_global_pose_no_override(i);
-        m_cached_world_mats[i] = transform3d_to_xmmatrix(pose);
+        const godot::Transform3D rest = m_skeleton->get_bone_global_rest(i);
+        const godot::Transform3D skin = pose * rest.affine_inverse();
+        m_cached_world_mats[i] = transform3d_to_xmmatrix(skin);
     }
 
     m_cached_skeleton_version = version;

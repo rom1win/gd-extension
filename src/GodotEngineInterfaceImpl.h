@@ -11,7 +11,20 @@
 #include "TressFX/TressFXCommon.h"
 
 #include <godot_cpp/classes/rendering_device.hpp>
+#include <godot_cpp/classes/rd_pipeline_color_blend_state.hpp>
+#include <godot_cpp/classes/rd_pipeline_color_blend_state_attachment.hpp>
+#include <godot_cpp/classes/rd_pipeline_depth_stencil_state.hpp>
+#include <godot_cpp/classes/rd_pipeline_multisample_state.hpp>
+#include <godot_cpp/classes/rd_pipeline_rasterization_state.hpp>
+#include <godot_cpp/classes/rd_sampler_state.hpp>
+#include <godot_cpp/classes/rd_shader_spirv.hpp>
+#include <godot_cpp/classes/rd_texture_format.hpp>
+#include <godot_cpp/classes/rd_texture_view.hpp>
+#include <godot_cpp/classes/rd_uniform.hpp>
+#include <godot_cpp/classes/rd_vertex_attribute.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
 
 typedef int EI_ResourceFormat;
 
@@ -23,6 +36,11 @@ public:
     godot::RID rid;
     uint32_t set_index = 0;
     godot::RenderingDevice* rd = nullptr;
+
+    // Godot ties uniform sets to a specific shader RID. TressFX creates bind sets
+    // before PSOs/shaders are available, so we store the RDUniform list and create
+    // the actual uniform set lazily when a PSO is bound.
+    godot::TypedArray<godot::RDUniform> uniforms;
 };
 
 class EI_PSO {
@@ -168,6 +186,10 @@ public:
     // This is the supported way to use RenderingServer::get_rendering_device() without thread violations.
     void RunMainRDSelfTestOnce();
 
+    // One-shot validation for texture/image resources on the *main* RenderingDevice.
+    // Creates an R32_UINT storage texture, writes a value in a compute shader, and reads it back async.
+    void RunMainRDImageSelfTestOnce();
+
     // Minimal submission hook (used by self-test and later by simulation/render integration).
     void EndAndSubmitCommandBuffer();
     
@@ -177,7 +199,7 @@ public:
     EI_ResourceFormat GetColorBufferFormat() { return 0; }
     EI_Resource* GetShadowBufferResource() { return nullptr; }
     EI_ResourceFormat GetShadowBufferFormat() { return 0; }
-    EI_Resource* GetDefaultWhiteTexture() { return nullptr; }
+    EI_Resource* GetDefaultWhiteTexture();
     EI_BindSet* GetSamplerBindSet() { return nullptr; }
 
     void GetTimeStamp(char * name) {}
@@ -190,6 +212,9 @@ public:
 private:
     godot::RenderingDevice* get_rd();
     godot::RenderingDevice* m_local_rd = nullptr;
+
+    std::unique_ptr<EI_Resource> m_default_white_texture;
+    std::unique_ptr<EI_Resource> m_default_linear_sampler;
 
     EI_CommandContext m_currentCommandBuffer;
 };

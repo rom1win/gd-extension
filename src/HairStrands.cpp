@@ -13,6 +13,7 @@
 
 #include "TressFX/TressFXHairObject.h"
 #include "TressFX/TressFXAsset.h"
+#include "GodotTressFXMath.h"
 
 static godot::String bytes_to_hex_prefix(const godot::PackedByteArray& bytes, int64_t max_bytes) {
     static const char* kHex = "0123456789ABCDEF";
@@ -257,6 +258,9 @@ godot::Ref<godot::ArrayMesh> HairStrands::CreateDebugLineMesh(bool guides_only, 
         strands_to_draw = strand_limit;
     }
 
+    const int follow_per_guide = (int)m_asset->m_numFollowStrandsPerGuide;
+    const int guide_stride = follow_per_guide + 1;
+
     // Each strand has (vps-1) segments; each segment contributes 2 vertices for line rendering.
     const int segments_per_strand = vps - 1;
     const int64_t total_vertices = (int64_t)strands_to_draw * (int64_t)segments_per_strand * 2;
@@ -269,13 +273,113 @@ godot::Ref<godot::ArrayMesh> HairStrands::CreateDebugLineMesh(bool guides_only, 
 
     int64_t out_i = 0;
     for (int s = 0; s < strands_to_draw; ++s) {
-        const int base = s * vps;
+        const int strand_index = guides_only ? (s * guide_stride) : s;
+        const int base = strand_index * vps;
         for (int v = 0; v < vps - 1; ++v) {
             const godot::Vector3 p0(m_asset->m_positions[base + v].x, m_asset->m_positions[base + v].y, m_asset->m_positions[base + v].z);
             const godot::Vector3 p1(m_asset->m_positions[base + v + 1].x, m_asset->m_positions[base + v + 1].y, m_asset->m_positions[base + v + 1].z);
             verts[(int)out_i++] = p0;
             verts[(int)out_i++] = p1;
         }
+    }
+
+    godot::Array arrays;
+    arrays.resize(godot::Mesh::ARRAY_MAX);
+    arrays[godot::Mesh::ARRAY_VERTEX] = verts;
+
+    godot::Ref<godot::ArrayMesh> mesh;
+    mesh.instantiate();
+    mesh->add_surface_from_arrays(godot::Mesh::PRIMITIVE_LINES, arrays);
+    return mesh;
+}
+
+godot::Ref<godot::ArrayMesh> HairStrands::CreateDebugSkinnedLineMesh(bool guides_only, int strand_limit) const {
+    if (!m_asset || !m_pScene) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    if (m_asset->m_boneSkinningData.empty()) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    const std::vector<XMMATRIX>& bone_mats = m_pScene->GetWorldSpaceSkeletonMats(m_skinNumber);
+    if (bone_mats.empty()) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    const int vps = (int)m_asset->m_numVerticesPerStrand;
+    if (vps < 2) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    const int total_strands = guides_only ? (int)m_asset->m_numGuideStrands : (int)m_asset->m_numTotalStrands;
+    int strands_to_draw = total_strands;
+    if (strand_limit > 0 && strand_limit < strands_to_draw) {
+        strands_to_draw = strand_limit;
+    }
+
+    const int follow_per_guide = (int)m_asset->m_numFollowStrandsPerGuide;
+    const int guide_stride = follow_per_guide + 1;
+
+    const int segments_per_strand = vps - 1;
+    const int64_t total_vertices = (int64_t)strands_to_draw * (int64_t)segments_per_strand * 2;
+    if (total_vertices <= 0) {
+        return godot::Ref<godot::ArrayMesh>();
+    }
+
+    godot::PackedVector3Array verts;
+    verts.resize(total_vertices);
+
+    int64_t out_i = 0;
+    for (int s = 0; s < strands_to_draw; ++s) {
+        const int strand_index = guides_only ? (s * guide_stride) : s;
+        const int base = strand_index * vps;
+        if (base + (vps - 1) >= (int)m_asset->m_positions.size()) {
+            break;
+        }
+
+        const TressFXBoneSkinningData& skin = m_asset->m_boneSkinningData[std::min<int>(strand_index, (int)m_asset->m_boneSkinningData.size() - 1)];
+
+        // Interpolate bone matrices using weights (matches TressFXBoneSkinning.hlsl convention).
+        XMMATRIX bone_matrix;
+        float weight_sum = 0.0f;
+        for (int i = 0; i < TRESSFX_MAX_INFLUENTIAL_BONE_COUNT; ++i) {
+            const float w = skin.weight[i];
+            if (w <= 0.0f) {
+                continue;
+            }
+            int bi = (int)skin.boneIndex[i];
+            if (bi < 0) {
+                bi = 0;
+            }
+            if (bi >= (int)bone_mats.size()) {
+                bi = 0;
+            }
+            bone_matrix += bone_mats[bi] * w;
+            weight_sum += w;
+        }
+        if (weight_sum > 0.0f) {
+            bone_matrix /= weight_sum;
+        }
+
+        auto transform_pos = [&](const Vector3& p) -> godot::Vector3 {
+            const XMVECTOR v{ p.x, p.y, p.z, 1.0f };
+            const XMVECTOR r = XMVector4Transform(v, bone_matrix);
+            return godot::Vector3(r.x, r.y, r.z);
+        };
+
+        for (int v = 0; v < vps - 1; ++v) {
+            const Vector3& p0_raw = m_asset->m_positions[base + v];
+            const Vector3& p1_raw = m_asset->m_positions[base + v + 1];
+            const godot::Vector3 p0 = transform_pos(p0_raw);
+            const godot::Vector3 p1 = transform_pos(p1_raw);
+            verts[(int)out_i++] = p0;
+            verts[(int)out_i++] = p1;
+        }
+    }
+
+    if (out_i != total_vertices) {
+        verts.resize(out_i);
     }
 
     godot::Array arrays;

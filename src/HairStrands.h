@@ -38,6 +38,10 @@ public:
     // Returns null if the asset isn't loaded.
     godot::Ref<godot::ArrayMesh> CreateDebugLineMesh(bool guides_only, int strand_limit) const;
 
+    // Path A (CPU-only): build a line mesh where each strand is CPU-skinned using the .tfxbone weights.
+    // Requires a valid EI_Scene with a Skeleton3D set.
+    godot::Ref<godot::ArrayMesh> CreateDebugSkinnedLineMesh(bool guides_only, int strand_limit) const;
+
     int GetGuideStrandCount() const;
     int GetTotalStrandCount() const;
 

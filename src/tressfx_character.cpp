@@ -4,6 +4,9 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/skeleton3d.hpp>
+#include <godot_cpp/classes/bone_attachment3d.hpp>
+#include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/variant/string_name.hpp>
 #include "tressfx_collision_node.h"
 #include "EngineInterface.h"
 #include "Simulation.h"
@@ -25,6 +28,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_debug_max_guide_strands", "max_strands"), &TressFXCharacter::set_debug_max_guide_strands);
     ClassDB::bind_method(D_METHOD("get_debug_max_guide_strands"), &TressFXCharacter::get_debug_max_guide_strands);
     ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_max_guide_strands", PROPERTY_HINT_RANGE, "1,256,1"), "set_debug_max_guide_strands", "get_debug_max_guide_strands");
+
+    ClassDB::bind_method(D_METHOD("set_debug_hair_offset", "offset"), &TressFXCharacter::set_debug_hair_offset);
+    ClassDB::bind_method(D_METHOD("get_debug_hair_offset"), &TressFXCharacter::get_debug_hair_offset);
+    ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "debug_hair_offset"), "set_debug_hair_offset", "get_debug_hair_offset");
 }
 
 TressFXCharacter::TressFXCharacter() {}
@@ -34,12 +41,6 @@ TressFXCharacter::~TressFXCharacter() {}
 void TressFXCharacter::_init() {}
 
 void TressFXCharacter::_ready() {
-    // One-shot compute backend sanity check.
-    if (EI_Device* device = GetDevice()) {
-        device->RunSelfTestOnce();
-        device->RunMainRDSelfTestOnce();
-    }
-
     // Register any existing child hair/collision nodes in case they were created
     // before this character (handles creation order in the editor).
     int cnt = get_child_count();
@@ -62,14 +63,16 @@ void TressFXCharacter::_ready() {
     // we can initialize the TressFX engine and load the assets.
     load_all_assets();
 
-    // CPU-only bring-up: keep per-frame simulation disabled until the GPU backend
-    // (PPLL/ShortCut/Simulation) is fully implemented.
-    set_process(false);
+    update_process_state();
 }
 
 void TressFXCharacter::_process(double delta) {
     m_frame_index++;
     m_time_seconds += delta;
+
+    if (m_debug_draw_hair_lines) {
+        update_debug_hair_lines();
+    }
 
     if (!m_pSimulation) {
         return;
@@ -164,6 +167,16 @@ void TressFXCharacter::load_all_assets() {
             "TressFXCharacter: no default Skeleton3D resolved from collision nodes (bone skinning will be unavailable)");
     }
 
+    // Cache for Path A debug visualization: use the same authoritative skeleton.
+    m_debug_skeleton = default_skeleton;
+    m_debug_follow_bone = String();
+    for (const auto &d : m_collisionDescriptions) {
+        if (!d.followBone.is_empty()) {
+            m_debug_follow_bone = d.followBone;
+            break;
+        }
+    }
+
     m_hairStrands.clear();
     m_collisionMeshes.clear();
     m_adapterScenes.clear();
@@ -250,19 +263,13 @@ void TressFXCharacter::load_all_assets() {
         String("TressFXCharacter: adapters created hair=") + String::num_int64((int)m_hairStrands.size()) +
         String(" coll=") + String::num_int64((int)m_collisionMeshes.size()));
 
-    // GPU bring-up is still in progress. PPLL/ShortCut/Simulation currently require
-    // texture/image resources that aren't implemented in EI_Device yet.
-    // Keep this CPU-only to avoid crashes.
-    m_pPPLL.reset();
-    m_pShortCut.reset();
-    m_pSimulation.reset();
-    UtilityFunctions::print("TressFXCharacter: GPU simulation disabled (EI_Device incomplete)");
-
+    refresh_backend_mode();
     refresh_debug_hair_lines();
 }
 
 void TressFXCharacter::set_debug_draw_hair_lines(bool enabled) {
     m_debug_draw_hair_lines = enabled;
+    refresh_backend_mode();
     refresh_debug_hair_lines();
 }
 
@@ -287,15 +294,20 @@ int TressFXCharacter::get_debug_max_guide_strands() const {
     return m_debug_max_guide_strands;
 }
 
-void TressFXCharacter::refresh_debug_hair_lines() {
-    // Remove previous debug children (if any).
-    for (int i = get_child_count() - 1; i >= 0; --i) {
-        Node* c = get_child(i);
-        if (c && String(c->get_name()).begins_with("TressFXDebugLines")) {
-            remove_child(c);
-            c->queue_free();
-        }
+void TressFXCharacter::set_debug_hair_offset(const godot::Vector3& offset) {
+    m_debug_hair_offset = offset;
+    if (m_debug_draw_hair_lines) {
+        // Update root transform immediately; mesh rebuild is not required.
+        update_debug_hair_lines();
     }
+}
+
+godot::Vector3 TressFXCharacter::get_debug_hair_offset() const {
+    return m_debug_hair_offset;
+}
+
+void TressFXCharacter::refresh_debug_hair_lines() {
+    clear_debug_hair_lines();
 
     if (!m_debug_draw_hair_lines) {
         return;
@@ -305,6 +317,44 @@ void TressFXCharacter::refresh_debug_hair_lines() {
     if (m_hairStrands.empty()) {
         return;
     }
+
+    // Always parent debug visuals under the character so the editor shows an AABB
+    // on the TressFXCharacter (what we relied on during earlier bring-up).
+    // The debug root is moved to the follow-bone transform when available.
+    Node3D* debug_root = memnew(Node3D);
+    debug_root->set_name("TressFXDebugRoot");
+    add_child(debug_root);
+    m_debug_root = debug_root;
+
+    m_debug_anchor = nullptr;
+    if (m_debug_skeleton && !m_debug_follow_bone.is_empty()) {
+        const int bone_idx = m_debug_skeleton->find_bone(m_debug_follow_bone);
+        if (bone_idx >= 0) {
+            BoneAttachment3D* attach = memnew(BoneAttachment3D);
+            attach->set_name(String("TressFXDebugHairAnchor_") + m_debug_follow_bone);
+            attach->set_bone_name(StringName(m_debug_follow_bone));
+            m_debug_skeleton->add_child(attach);
+            m_debug_anchor = attach;
+        }
+    }
+
+    // Debug-only axis alignment: many TressFX assets are authored facing the opposite
+    // direction relative to the Godot character forward.
+    Transform3D t;
+    if (m_debug_anchor) {
+        t = m_debug_anchor->get_global_transform();
+    } else if (m_debug_skeleton) {
+        t = m_debug_skeleton->get_global_transform();
+    } else {
+        t = get_global_transform();
+    }
+    // Keep the earlier bring-up alignment: 90 degrees around Y.
+    t.basis = t.basis * Basis(Vector3(0, 1, 0), Math_PI * 0.5);
+    t.origin += t.basis.xform(m_debug_hair_offset);
+    debug_root->set_global_transform(t);
+
+    m_debug_lines_parent = debug_root;
+    m_debug_line_instances.clear();
 
     const int cap = std::min(m_debug_max_guide_strands, 256);
     for (int i = 0; i < (int)m_hairStrands.size(); ++i) {
@@ -316,6 +366,96 @@ void TressFXCharacter::refresh_debug_hair_lines() {
         MeshInstance3D* mi = memnew(MeshInstance3D);
         mi->set_name(String("TressFXDebugLines_") + String::num_int64(i));
         mi->set_mesh(mesh);
-        add_child(mi);
+        debug_root->add_child(mi);
+        m_debug_line_instances.push_back(mi);
     }
+}
+
+void TressFXCharacter::clear_debug_hair_lines() {
+    m_debug_line_instances.clear();
+    m_debug_lines_parent = nullptr;
+    m_debug_root = nullptr;
+    m_debug_anchor = nullptr;
+
+    // 1) Remove any debug meshes attached directly under the character.
+    for (int i = get_child_count() - 1; i >= 0; --i) {
+        Node* c = get_child(i);
+        if (!c) {
+            continue;
+        }
+        const String n = String(c->get_name());
+        if (n == "TressFXDebugRoot" || n.begins_with("TressFXDebugLines_") || n.begins_with("TressFXDebugHairAttachment_")) {
+            remove_child(c);
+            c->queue_free();
+        }
+    }
+
+    // 2) Remove any debug attachments under the skeleton (which also removes meshes parented to them).
+    if (m_debug_skeleton) {
+        for (int i = m_debug_skeleton->get_child_count() - 1; i >= 0; --i) {
+            Node* c = m_debug_skeleton->get_child(i);
+            if (!c) {
+                continue;
+            }
+            const String n = String(c->get_name());
+            if (n.begins_with("TressFXDebugHairAttachment_") || n.begins_with("TressFXDebugHairAnchor_")) {
+                m_debug_skeleton->remove_child(c);
+                c->queue_free();
+            }
+        }
+    }
+}
+
+void TressFXCharacter::update_debug_hair_lines() {
+    if (m_debug_root) {
+        Transform3D t;
+        if (m_debug_anchor) {
+            t = m_debug_anchor->get_global_transform();
+        } else if (m_debug_skeleton) {
+            t = m_debug_skeleton->get_global_transform();
+        } else {
+            t = get_global_transform();
+        }
+        t.basis = t.basis * Basis(Vector3(0, 1, 0), Math_PI * 0.5);
+        t.origin += t.basis.xform(m_debug_hair_offset);
+        m_debug_root->set_global_transform(t);
+    }
+}
+
+void TressFXCharacter::refresh_backend_mode() {
+    if (m_debug_draw_hair_lines) {
+        // Debug/CPU mode: show CPU guide lines and keep GPU objects off.
+        m_gpu_mode_active = false;
+        m_pPPLL.reset();
+        m_pShortCut.reset();
+        m_pSimulation.reset();
+        UtilityFunctions::print("TressFXCharacter: debug enabled -> CPU debug render (GPU disabled)");
+    } else {
+        // GPU mode: use Godot RenderingDevice.
+        // For the first stability step, we only run the RenderingDevice self-tests.
+        // This validates we can create/dispatch/async-readback without crashing.
+        m_gpu_mode_active = true;
+        m_pPPLL.reset();
+        m_pShortCut.reset();
+        m_pSimulation.reset();
+
+        if (EI_Device* device = GetDevice()) {
+            device->RunSelfTestOnce();
+            device->RunMainRDSelfTestOnce();
+            device->RunMainRDImageSelfTestOnce();
+        } else {
+            UtilityFunctions::push_warning("TressFXCharacter: GPU mode requested but EI_Device is null");
+        }
+
+        UtilityFunctions::print("TressFXCharacter: debug disabled -> GPU mode (RenderingDevice self-test only; simulation disabled until shader pack exists)");
+    }
+
+    update_process_state();
+}
+
+void TressFXCharacter::update_process_state() {
+    // We need processing when either:
+    // - CPU debug is active (to keep transforms updated), OR
+    // - GPU mode is active (to tick simulation / future rendering).
+    set_process(m_debug_draw_hair_lines || m_gpu_mode_active);
 }
