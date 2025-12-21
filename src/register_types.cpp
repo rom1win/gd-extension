@@ -4,6 +4,8 @@
 #include "tressfx_character.h"
 #include "tressfx_collision_node.h"
 
+#include "GodotEngineInterfaceImpl.h"
+
 #include <gdextension_interface.h>
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
@@ -19,6 +21,9 @@ void initialize_module(ModuleInitializationLevel p_level) {
 
 	godot::UtilityFunctions::print("tfx_bridge: initialize_module(MODULE_INITIALIZATION_LEVEL_SCENE)");
 
+	// EI_Device holds Godot Variant types and must be created after godot-cpp init.
+	InitializeGodotEngineInterface();
+
 	// Register the new TressFX node wrappers
 	GDREGISTER_CLASS(TressFXHairNode);
 	GDREGISTER_CLASS(TressFXCollisionNode);
@@ -29,6 +34,8 @@ void uninitialize_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
+
+	ShutdownGodotEngineInterface();
 }
 
 extern "C" {

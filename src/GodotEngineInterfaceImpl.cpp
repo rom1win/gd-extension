@@ -8,6 +8,7 @@
 #include <godot_cpp/classes/rd_pipeline_depth_stencil_state.hpp>
 #include <godot_cpp/classes/rd_pipeline_multisample_state.hpp>
 #include <godot_cpp/classes/rd_pipeline_rasterization_state.hpp>
+#include <godot_cpp/classes/rd_attachment_format.hpp>
 #include <godot_cpp/classes/rd_texture_format.hpp>
 #include <godot_cpp/classes/rd_texture_view.hpp>
 #include <godot_cpp/classes/rd_uniform.hpp>
@@ -22,13 +23,31 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 
 using namespace godot;
 
-static EI_Device g_Device;
+static EI_Device* g_device_singleton = nullptr;
 
 EI_Device* GetDevice() {
-    return &g_Device;
+    return g_device_singleton;
+}
+
+void InitializeGodotEngineInterface() {
+    if (g_device_singleton) {
+        return;
+    }
+    g_device_singleton = memnew(EI_Device);
+}
+
+void ShutdownGodotEngineInterface() {
+    if (!g_device_singleton) {
+        return;
+    }
+    memdelete(g_device_singleton);
+    g_device_singleton = nullptr;
 }
 
 EI_BindSet::~EI_BindSet() {
@@ -552,6 +571,91 @@ static String make_spirv_path(const char* shader_name, const char* stage_ext) {
     return String("res://shaders/spirv/") + s + String(".") + String(stage_ext) + String(".spv");
 }
 
+static String strip_known_shader_extensions(String s) {
+    s = s.strip_edges();
+    if (s.ends_with(".spv")) {
+        s = s.substr(0, s.length() - 4);
+    }
+    if (s.ends_with(".hlsl")) {
+        s = s.substr(0, s.length() - 5);
+    }
+    if (s.ends_with(".glsl")) {
+        s = s.substr(0, s.length() - 5);
+    }
+    if (s.ends_with(".comp") || s.ends_with(".vert") || s.ends_with(".frag")) {
+        s = s.substr(0, s.length() - 5);
+    }
+    return s;
+}
+
+static String make_spirv_path_compute(const char* shader_name, const char* entry_point) {
+    if (!shader_name || shader_name[0] == '\0') {
+        return String();
+    }
+
+    String s(shader_name);
+    s = s.strip_edges();
+
+    // Explicit paths are respected.
+    if (s.begins_with("res://") || s.begins_with("user://")) {
+        return s;
+    }
+
+    // Allow callers to pass explicit .spv under the pack folder.
+    if (s.ends_with(".spv")) {
+        return String("res://shaders/spirv/") + s;
+    }
+
+    const String base = strip_known_shader_extensions(s);
+
+    String ep;
+    if (entry_point && entry_point[0] != '\0') {
+        ep = String(entry_point).strip_edges();
+    }
+
+    if (!ep.is_empty()) {
+        return String("res://shaders/spirv/") + base + String(".") + ep + String(".comp.spv");
+    }
+
+    return String("res://shaders/spirv/") + base + String(".comp.spv");
+}
+
+static String make_glsl_path_compute(const char* shader_name, const char* entry_point) {
+    // Source fallback mirrors the SPIR-V naming.
+    if (!shader_name || shader_name[0] == '\0') {
+        return String();
+    }
+
+    String s(shader_name);
+    s = s.strip_edges();
+
+    if (s.begins_with("res://") || s.begins_with("user://")) {
+        return s;
+    }
+
+    const String base = strip_known_shader_extensions(s);
+    String ep;
+    if (entry_point && entry_point[0] != '\0') {
+        ep = String(entry_point).strip_edges();
+    }
+
+    if (!ep.is_empty()) {
+        return String("res://shaders/glsl/") + base + String(".") + ep + String(".comp.glsl");
+    }
+
+    return String("res://shaders/glsl/") + base + String(".comp.glsl");
+}
+
+static void warn_missing_shader_once(const String& key, const String& message) {
+    static std::unordered_set<std::string> s_once;
+    const std::string k = std::string(key.utf8().get_data());
+    if (s_once.find(k) != s_once.end()) {
+        return;
+    }
+    s_once.insert(k);
+    UtilityFunctions::push_warning(message);
+}
+
 // For RenderingDevice, we can compile SPIR-V at runtime from GLSL sources.
 // We map TressFX's (shaderName, entryPoint) to a single GLSL file per kernel.
 // Example:
@@ -672,8 +776,8 @@ std::unique_ptr<EI_PSO> EI_Device::CreateComputeShaderPSO(const char* shaderName
         }
     }
 
-    const String glsl_path = make_glsl_path(shaderName, entryPoint, "comp");
-    const String spv_path = make_spirv_path(shaderName, "comp");
+    const String glsl_path = make_glsl_path_compute(shaderName, entryPoint);
+    const String spv_path = make_spirv_path_compute(shaderName, entryPoint);
     if (glsl_path.is_empty() && spv_path.is_empty()) {
         UtilityFunctions::push_warning("EI_Device::CreateComputeShaderPSO: empty shader name");
         return std::make_unique<EI_PSO>();
@@ -697,7 +801,10 @@ std::unique_ptr<EI_PSO> EI_Device::CreateComputeShaderPSO(const char* shaderName
     }
 
     if (!spirv.is_valid()) {
-        UtilityFunctions::push_warning(String("EI_Device::CreateComputeShaderPSO: missing SPIR-V and GLSL fallback. SPIR-V path=") + spv_path + String(" GLSL path=") + glsl_path);
+        warn_missing_shader_once(
+            debug_name,
+            String("EI_Device::CreateComputeShaderPSO: missing shader for ") + debug_name +
+                String(". SPIR-V=") + spv_path + String(" GLSL=") + glsl_path);
         return std::make_unique<EI_PSO>();
     }
 
@@ -1332,4 +1439,518 @@ void EI_Device::RunMainRDImageSelfTestOnce() {
     }
 
     rs->call_on_render_thread(callable_mp_static(&run_main_rd_image_self_test_on_render_thread));
+}
+
+// --- Minimal guide-line render path (main RD) ---------------------------------
+
+struct MainRDGuideLinesState {
+    godot::RenderingDevice* rd = nullptr;
+
+    // Source + derived counts.
+    int vertices_per_strand = 0;
+    int guide_strands = 0;
+    int segments = 0;
+    int vertex_count = 0;
+
+    // GPU resources.
+    godot::RID guide_positions;   // storage buffer (vec4)
+    godot::RID line_vertices;     // storage buffer (vec4)
+    godot::RID view_ubo;          // uniform buffer (mat4)
+
+    godot::RID compute_shader;
+    godot::RID compute_pipeline;
+    godot::RID compute_set;
+
+    godot::RID color_tex;
+    int64_t fb_format = -1;
+    godot::RID framebuffer;
+
+    godot::RID gfx_shader;
+    godot::RID gfx_pipeline;
+    int64_t vertex_format = -1;
+    godot::RID gfx_set;
+
+    uint32_t width = 512;
+    uint32_t height = 512;
+
+    bool active = false;
+    bool logged_init = false;
+};
+
+static MainRDGuideLinesState* g_main_rd_guidelines = nullptr;
+
+static MainRDGuideLinesState& get_main_rd_guidelines_state() {
+    if (!g_main_rd_guidelines) {
+        g_main_rd_guidelines = new MainRDGuideLinesState();
+    }
+    return *g_main_rd_guidelines;
+}
+
+static void cleanup_main_rd_guidelines_on_render_thread() {
+    MainRDGuideLinesState& st = get_main_rd_guidelines_state();
+    if (!st.rd) {
+        *g_main_rd_guidelines = MainRDGuideLinesState{};
+        return;
+    }
+
+    godot::RenderingDevice* rd = st.rd;
+    if (st.gfx_set.is_valid()) rd->free_rid(st.gfx_set);
+    if (st.gfx_pipeline.is_valid()) rd->free_rid(st.gfx_pipeline);
+    if (st.gfx_shader.is_valid()) rd->free_rid(st.gfx_shader);
+    if (st.framebuffer.is_valid()) rd->free_rid(st.framebuffer);
+    if (st.fb_format != -1) {
+        // framebuffer formats are int64 ids; no free call.
+        st.fb_format = -1;
+    }
+    if (st.color_tex.is_valid()) rd->free_rid(st.color_tex);
+    if (st.compute_set.is_valid()) rd->free_rid(st.compute_set);
+    if (st.compute_pipeline.is_valid()) rd->free_rid(st.compute_pipeline);
+    if (st.compute_shader.is_valid()) rd->free_rid(st.compute_shader);
+    if (st.view_ubo.is_valid()) rd->free_rid(st.view_ubo);
+    if (st.line_vertices.is_valid()) rd->free_rid(st.line_vertices);
+    if (st.guide_positions.is_valid()) rd->free_rid(st.guide_positions);
+
+    *g_main_rd_guidelines = MainRDGuideLinesState{};
+}
+
+static Ref<RDShaderSPIRV> compile_spirv_from_glsl_source(RenderingDevice* rd, const String& vs_path, const String& fs_path) {
+    if (!rd) {
+        return Ref<RDShaderSPIRV>();
+    }
+    const String vsrc = load_file_text_or_empty(vs_path);
+    const String fsrc = load_file_text_or_empty(fs_path);
+    if (vsrc.is_empty() || fsrc.is_empty()) {
+        return Ref<RDShaderSPIRV>();
+    }
+    Ref<RDShaderSource> src;
+    src.instantiate();
+    src->set_language(RenderingDevice::SHADER_LANGUAGE_GLSL);
+    src->set_stage_source(RenderingDevice::SHADER_STAGE_VERTEX, vsrc);
+    src->set_stage_source(RenderingDevice::SHADER_STAGE_FRAGMENT, fsrc);
+
+    Ref<RDShaderSPIRV> spirv = rd->shader_compile_spirv_from_source(src, true);
+    if (!spirv.is_valid()) {
+        return Ref<RDShaderSPIRV>();
+    }
+    const String verr = spirv->get_stage_compile_error(RenderingDevice::SHADER_STAGE_VERTEX);
+    const String ferr = spirv->get_stage_compile_error(RenderingDevice::SHADER_STAGE_FRAGMENT);
+    if (!verr.is_empty() || !ferr.is_empty()) {
+        UtilityFunctions::push_warning(String("GuideLines shader compile error:\nVS:\n") + verr + String("\nFS:\n") + ferr);
+        return Ref<RDShaderSPIRV>();
+    }
+    return spirv;
+}
+
+static Ref<RDShaderSPIRV> compile_spirv_from_glsl_compute(RenderingDevice* rd, const String& cs_path) {
+    if (!rd) {
+        return Ref<RDShaderSPIRV>();
+    }
+    const String csrc = load_file_text_or_empty(cs_path);
+    if (csrc.is_empty()) {
+        return Ref<RDShaderSPIRV>();
+    }
+    Ref<RDShaderSource> src;
+    src.instantiate();
+    src->set_language(RenderingDevice::SHADER_LANGUAGE_GLSL);
+    src->set_stage_source(RenderingDevice::SHADER_STAGE_COMPUTE, csrc);
+
+    Ref<RDShaderSPIRV> spirv = rd->shader_compile_spirv_from_source(src, true);
+    if (!spirv.is_valid()) {
+        return Ref<RDShaderSPIRV>();
+    }
+    const String err = spirv->get_stage_compile_error(RenderingDevice::SHADER_STAGE_COMPUTE);
+    if (!err.is_empty()) {
+        UtilityFunctions::push_warning(String("GuideLines compute compile error:\n") + err);
+        return Ref<RDShaderSPIRV>();
+    }
+    return spirv;
+}
+
+static void ensure_main_rd_guidelines_resources(RenderingDevice* rd, const PackedByteArray& positions_vec4, const PackedByteArray& viewproj_mat4, int vps, int guide_strands) {
+    MainRDGuideLinesState& st = get_main_rd_guidelines_state();
+
+    const bool need_recreate =
+        (!st.active) ||
+        (st.rd != rd) ||
+        (st.vertices_per_strand != vps) ||
+        (st.guide_strands != guide_strands) ||
+        (!st.guide_positions.is_valid()) ||
+        (!st.line_vertices.is_valid()) ||
+        (!st.compute_pipeline.is_valid()) ||
+        (!st.gfx_pipeline.is_valid()) ||
+        (!st.color_tex.is_valid()) ||
+        (!st.framebuffer.is_valid());
+
+    if (!need_recreate) {
+        return;
+    }
+
+    cleanup_main_rd_guidelines_on_render_thread();
+    st = MainRDGuideLinesState{};
+    st.rd = rd;
+    st.vertices_per_strand = vps;
+    st.guide_strands = guide_strands;
+    st.segments = guide_strands * std::max(0, vps - 1);
+    st.vertex_count = st.segments * 2;
+
+    if (st.segments <= 0 || positions_vec4.is_empty()) {
+        UtilityFunctions::push_warning("GuideLines: no segments/positions; skipping resource init");
+        return;
+    }
+
+    // Buffers.
+    st.guide_positions = rd->storage_buffer_create((uint32_t)positions_vec4.size(), positions_vec4);
+    rd->set_resource_name(st.guide_positions, "tressfx_guidelines_positions");
+
+    const uint32_t out_bytes = (uint32_t)st.vertex_count * 16u; // vec4 per vertex
+    st.line_vertices = rd->storage_buffer_create(out_bytes);
+    rd->set_resource_name(st.line_vertices, "tressfx_guidelines_line_vertices");
+
+    st.view_ubo = rd->uniform_buffer_create(64, viewproj_mat4);
+    rd->set_resource_name(st.view_ubo, "tressfx_guidelines_view_ubo");
+
+    // Compute pipeline.
+    {
+        const String cs_path = "res://shaders/glsl/TressFXGuideLines.Prepare.comp.glsl";
+        Ref<RDShaderSPIRV> spirv = compile_spirv_from_glsl_compute(rd, cs_path);
+        if (!spirv.is_valid()) {
+            UtilityFunctions::push_warning(String("GuideLines: missing/failed compute shader: ") + cs_path);
+            return;
+        }
+        st.compute_shader = rd->shader_create_from_spirv(spirv, "tressfx_guidelines_prepare_shader");
+        st.compute_pipeline = rd->compute_pipeline_create(st.compute_shader);
+        if (!st.compute_pipeline.is_valid()) {
+            UtilityFunctions::push_warning("GuideLines: compute_pipeline_create failed");
+            return;
+        }
+
+        Ref<RDUniform> u0;
+        u0.instantiate();
+        u0->set_uniform_type(RenderingDevice::UNIFORM_TYPE_STORAGE_BUFFER);
+        u0->set_binding(0);
+        u0->add_id(st.guide_positions);
+
+        Ref<RDUniform> u1;
+        u1.instantiate();
+        u1->set_uniform_type(RenderingDevice::UNIFORM_TYPE_STORAGE_BUFFER);
+        u1->set_binding(1);
+        u1->add_id(st.line_vertices);
+
+        TypedArray<RDUniform> uniforms;
+        uniforms.push_back(u0);
+        uniforms.push_back(u1);
+        st.compute_set = rd->uniform_set_create(uniforms, st.compute_shader, 0);
+        if (!st.compute_set.is_valid()) {
+            UtilityFunctions::push_warning("GuideLines: uniform_set_create failed (compute)");
+            return;
+        }
+    }
+
+    // Offscreen texture + framebuffer.
+    {
+        Ref<RDTextureFormat> fmt;
+        fmt.instantiate();
+        fmt->set_width(st.width);
+        fmt->set_height(st.height);
+        fmt->set_depth(1);
+        fmt->set_array_layers(1);
+        fmt->set_mipmaps(1);
+        fmt->set_texture_type(RenderingDevice::TEXTURE_TYPE_2D);
+        fmt->set_samples(RenderingDevice::TEXTURE_SAMPLES_1);
+        fmt->set_format(RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
+        fmt->set_usage_bits(
+            RenderingDevice::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT |
+            RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
+            RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
+            RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT);
+
+        Ref<RDTextureView> view;
+        view.instantiate();
+        st.color_tex = rd->texture_create(fmt, view);
+        rd->set_resource_name(st.color_tex, "tressfx_guidelines_color");
+
+        Ref<RDAttachmentFormat> a;
+        a.instantiate();
+        a->set_format(RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
+        a->set_samples(RenderingDevice::TEXTURE_SAMPLES_1);
+        a->set_usage_flags((uint32_t)RenderingDevice::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT);
+
+        TypedArray<RDAttachmentFormat> atts;
+        atts.push_back(a);
+        st.fb_format = rd->framebuffer_format_create(atts);
+
+        TypedArray<RID> texs;
+        texs.push_back(st.color_tex);
+        st.framebuffer = rd->framebuffer_create(texs, st.fb_format);
+        if (!st.framebuffer.is_valid()) {
+            UtilityFunctions::push_warning("GuideLines: framebuffer_create failed");
+            return;
+        }
+    }
+
+    // Graphics pipeline.
+    {
+        const String vs_path = "res://shaders/glsl/tressfx_guidelines.vert.glsl";
+        const String fs_path = "res://shaders/glsl/tressfx_guidelines.frag.glsl";
+        Ref<RDShaderSPIRV> spirv = compile_spirv_from_glsl_source(rd, vs_path, fs_path);
+        if (!spirv.is_valid()) {
+            UtilityFunctions::push_warning(String("GuideLines: missing/failed graphics shaders: ") + vs_path + String(" / ") + fs_path);
+            return;
+        }
+        st.gfx_shader = rd->shader_create_from_spirv(spirv, "tressfx_guidelines_gfx_shader");
+        if (!st.gfx_shader.is_valid()) {
+            UtilityFunctions::push_warning("GuideLines: shader_create_from_spirv failed (gfx)");
+            return;
+        }
+
+        // Vertex shader uses gl_VertexIndex + storage buffer fetch, so vertex format can be empty.
+        TypedArray<RDVertexAttribute> attrs;
+        st.vertex_format = rd->vertex_format_create(attrs);
+        if (st.vertex_format < 0) {
+            UtilityFunctions::push_warning("GuideLines: vertex_format_create failed");
+            return;
+        }
+
+        Ref<RDPipelineRasterizationState> rast;
+        rast.instantiate();
+        rast->set_cull_mode(RenderingDevice::POLYGON_CULL_DISABLED);
+        rast->set_front_face(RenderingDevice::POLYGON_FRONT_FACE_COUNTER_CLOCKWISE);
+        rast->set_line_width(1.0f);
+
+        Ref<RDPipelineMultisampleState> ms;
+        ms.instantiate();
+        ms->set_sample_count(RenderingDevice::TEXTURE_SAMPLES_1);
+
+        Ref<RDPipelineDepthStencilState> ds;
+        ds.instantiate();
+        ds->set_enable_depth_test(false);
+        ds->set_enable_depth_write(false);
+        ds->set_depth_compare_operator(RenderingDevice::COMPARE_OP_ALWAYS);
+
+        Ref<RDPipelineColorBlendStateAttachment> att;
+        att.instantiate();
+        att->set_write_r(true);
+        att->set_write_g(true);
+        att->set_write_b(true);
+        att->set_write_a(true);
+        att->set_enable_blend(false);
+
+        TypedArray<RDPipelineColorBlendStateAttachment> atts;
+        atts.push_back(att);
+
+        Ref<RDPipelineColorBlendState> blend;
+        blend.instantiate();
+        blend->set_attachments(atts);
+
+        st.gfx_pipeline = rd->render_pipeline_create(
+            st.gfx_shader,
+            st.fb_format,
+            st.vertex_format,
+            RenderingDevice::RENDER_PRIMITIVE_LINES,
+            rast,
+            ms,
+            ds,
+            blend);
+
+        if (!st.gfx_pipeline.is_valid()) {
+            UtilityFunctions::push_warning("GuideLines: render_pipeline_create failed");
+            return;
+        }
+
+        Ref<RDUniform> b0;
+        b0.instantiate();
+        b0->set_uniform_type(RenderingDevice::UNIFORM_TYPE_STORAGE_BUFFER);
+        b0->set_binding(0);
+        b0->add_id(st.line_vertices);
+
+        Ref<RDUniform> b1;
+        b1.instantiate();
+        b1->set_uniform_type(RenderingDevice::UNIFORM_TYPE_UNIFORM_BUFFER);
+        b1->set_binding(1);
+        b1->add_id(st.view_ubo);
+
+        TypedArray<RDUniform> uniforms;
+        uniforms.push_back(b0);
+        uniforms.push_back(b1);
+        st.gfx_set = rd->uniform_set_create(uniforms, st.gfx_shader, 0);
+        if (!st.gfx_set.is_valid()) {
+            UtilityFunctions::push_warning("GuideLines: uniform_set_create failed (gfx)");
+            return;
+        }
+    }
+
+    st.active = true;
+    if (!st.logged_init) {
+        UtilityFunctions::print(String("GuideLines: initialized on main RD. guides=") + String::num_int64(st.guide_strands) +
+                                String(" vps=") + String::num_int64(st.vertices_per_strand) +
+                                String(" segments=") + String::num_int64(st.segments) +
+                                String(" vertex_count=") + String::num_int64(st.vertex_count) +
+                                String(" tex=") + String::num_int64((int64_t)st.width) + String("x") + String::num_int64((int64_t)st.height));
+        st.logged_init = true;
+    }
+}
+
+static void run_main_rd_guidelines_once_on_render_thread() {
+    RenderingServer* rs = RenderingServer::get_singleton();
+    if (!rs) {
+        UtilityFunctions::push_warning("GuideLines: RenderingServer is null");
+        return;
+    }
+    RenderingDevice* rd = rs->get_rendering_device();
+    if (!rd) {
+        UtilityFunctions::push_warning("GuideLines: main RenderingDevice is null");
+        return;
+    }
+
+    // Pull source from EI_Device.
+    EI_Device* dev = GetDevice();
+    if (!dev) {
+        UtilityFunctions::push_warning("GuideLines: EI_Device is null");
+        return;
+    }
+
+    PackedByteArray positions;
+    PackedByteArray viewproj;
+    int vps = 0;
+    int guides = 0;
+    if (!dev->PopGuideLinesSourceForRenderThread(positions, viewproj, vps, guides)) {
+        UtilityFunctions::push_warning("GuideLines: no source positions/matrix provided");
+        return;
+    }
+
+    ensure_main_rd_guidelines_resources(rd, positions, viewproj, vps, guides);
+    MainRDGuideLinesState& st = get_main_rd_guidelines_state();
+    if (!st.active) {
+        return;
+    }
+
+    // Update view UBO (cheap) and positions buffer (only when sizes match; for now we assume stable sizes).
+    if (st.view_ubo.is_valid() && viewproj.size() == 64) {
+        rd->buffer_update(st.view_ubo, 0, 64, viewproj);
+    }
+    if (st.guide_positions.is_valid() && positions.size() > 0) {
+        rd->buffer_update(st.guide_positions, 0, (uint32_t)positions.size(), positions);
+    }
+
+    // Compute: build line vertex buffer from guide positions.
+    const int64_t cl = rd->compute_list_begin();
+    rd->compute_list_bind_compute_pipeline(cl, st.compute_pipeline);
+    rd->compute_list_bind_uniform_set(cl, st.compute_set, 0);
+
+    // Push constants: uvec4(vps, segments, 0, 0)
+    PackedByteArray pc;
+    pc.resize(16);
+    uint32_t* pcu = reinterpret_cast<uint32_t*>(pc.ptrw());
+    pcu[0] = (uint32_t)st.vertices_per_strand;
+    pcu[1] = (uint32_t)st.segments;
+    pcu[2] = 0;
+    pcu[3] = 0;
+    rd->compute_list_set_push_constant(cl, pc, 16);
+
+    const uint32_t local_size = 64;
+    const uint32_t groups = (uint32_t)((st.segments + (int)local_size - 1) / (int)local_size);
+    rd->compute_list_dispatch(cl, groups, 1, 1);
+    rd->compute_list_add_barrier(cl);
+    rd->compute_list_end();
+
+    // Draw to offscreen texture.
+    PackedColorArray clears;
+    clears.push_back(Color(0, 0, 0, 1));
+    const int64_t dl = rd->draw_list_begin(
+        st.framebuffer,
+        RenderingDevice::DRAW_CLEAR_COLOR_ALL,
+        clears,
+        1.0f,
+        0,
+        Rect2(0, 0, (float)st.width, (float)st.height));
+
+    rd->draw_list_bind_render_pipeline(dl, st.gfx_pipeline);
+    rd->draw_list_bind_uniform_set(dl, st.gfx_set, 0);
+    rd->draw_list_draw(dl, /*use_indices=*/false, /*instances=*/1, /*procedural_vertex_count=*/(uint32_t)st.vertex_count);
+    rd->draw_list_end();
+}
+
+bool EI_Device::PopGuideLinesSourceForRenderThread(godot::PackedByteArray& out_positions_vec4, godot::PackedByteArray& out_viewproj_mat4, int& out_vertices_per_strand, int& out_guide_strands) {
+    std::lock_guard<std::mutex> lock(m_guidelines_mutex);
+    if (m_guidelines_positions_vec4.is_empty() || m_guidelines_viewproj_mat4.is_empty() || m_guidelines_vertices_per_strand <= 0 || m_guidelines_guide_strands <= 0) {
+        return false;
+    }
+    out_positions_vec4 = m_guidelines_positions_vec4;
+    out_viewproj_mat4 = m_guidelines_viewproj_mat4;
+    out_vertices_per_strand = m_guidelines_vertices_per_strand;
+    out_guide_strands = m_guidelines_guide_strands;
+    m_guidelines_dirty = false;
+    return true;
+}
+
+void EI_Device::SetGuideLinesSource(const godot::PackedByteArray& guide_positions_vec4, int vertices_per_strand, int guide_strands) {
+    if (vertices_per_strand <= 0 || guide_strands <= 0 || guide_positions_vec4.is_empty()) {
+        UtilityFunctions::push_warning("EI_Device::SetGuideLinesSource: invalid args");
+        return;
+    }
+
+    // Compute a simple 2D fit matrix mapping the guide AABB into clip-space.
+    // Matrix is column-major (GLSL default).
+    float minx = 1e30f, miny = 1e30f;
+    float maxx = -1e30f, maxy = -1e30f;
+    const int pos_count = guide_strands * vertices_per_strand;
+    if (guide_positions_vec4.size() < pos_count * 16) {
+        UtilityFunctions::push_warning("EI_Device::SetGuideLinesSource: buffer too small for vps/guides");
+        return;
+    }
+
+    const float* src = reinterpret_cast<const float*>(guide_positions_vec4.ptr());
+    for (int i = 0; i < pos_count; ++i) {
+        const float x = src[i * 4 + 0];
+        const float y = src[i * 4 + 1];
+        minx = std::min(minx, x);
+        miny = std::min(miny, y);
+        maxx = std::max(maxx, x);
+        maxy = std::max(maxy, y);
+    }
+
+    const float cx = 0.5f * (minx + maxx);
+    const float cy = 0.5f * (miny + maxy);
+    float sx = std::max(1e-4f, (maxx - minx));
+    float sy = std::max(1e-4f, (maxy - miny));
+    // 10% padding.
+    sx *= 1.1f;
+    sy *= 1.1f;
+
+    const float inv_sx = 2.0f / sx;
+    const float inv_sy = 2.0f / sy;
+    const float tx = -cx * inv_sx;
+    const float ty = -cy * inv_sy;
+
+    PackedByteArray mat;
+    mat.resize(64);
+    float* m = reinterpret_cast<float*>(mat.ptrw());
+    // Column-major 4x4.
+    m[0] = inv_sx; m[1] = 0.0f;  m[2] = 0.0f; m[3] = 0.0f;
+    m[4] = 0.0f;  m[5] = inv_sy; m[6] = 0.0f; m[7] = 0.0f;
+    m[8] = 0.0f;  m[9] = 0.0f;  m[10] = 0.0f; m[11] = 0.0f;
+    m[12] = tx;   m[13] = ty;   m[14] = 0.0f; m[15] = 1.0f;
+
+    {
+        std::lock_guard<std::mutex> lock(m_guidelines_mutex);
+        m_guidelines_positions_vec4 = guide_positions_vec4;
+        m_guidelines_viewproj_mat4 = mat;
+        m_guidelines_vertices_per_strand = vertices_per_strand;
+        m_guidelines_guide_strands = guide_strands;
+        m_guidelines_dirty = true;
+    }
+}
+
+void EI_Device::RunMainRDGuideLinesOnce() {
+    RenderingServer* rs = RenderingServer::get_singleton();
+    if (!rs) {
+        UtilityFunctions::push_warning("EI_Device::RunMainRDGuideLinesOnce: RenderingServer is null");
+        return;
+    }
+    rs->call_on_render_thread(callable_mp_static(&run_main_rd_guidelines_once_on_render_thread));
+}
+
+godot::RID EI_Device::GetMainRDGuideLinesTextureRID() const {
+    MainRDGuideLinesState& st = get_main_rd_guidelines_state();
+    return st.color_tex;
 }

@@ -7,6 +7,7 @@
 #include <godot_cpp/classes/bone_attachment3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/variant/string_name.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 #include "tressfx_collision_node.h"
 #include "EngineInterface.h"
 #include "Simulation.h"
@@ -32,6 +33,9 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_debug_hair_offset", "offset"), &TressFXCharacter::set_debug_hair_offset);
     ClassDB::bind_method(D_METHOD("get_debug_hair_offset"), &TressFXCharacter::get_debug_hair_offset);
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "debug_hair_offset"), "set_debug_hair_offset", "get_debug_hair_offset");
+
+    ClassDB::bind_method(D_METHOD("get_gpu_guide_lines_texture"), &TressFXCharacter::get_gpu_guide_lines_texture);
+    ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "gpu_guide_lines_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "", "get_gpu_guide_lines_texture");
 }
 
 TressFXCharacter::TressFXCharacter() {}
@@ -432,8 +436,8 @@ void TressFXCharacter::refresh_backend_mode() {
         UtilityFunctions::print("TressFXCharacter: debug enabled -> CPU debug render (GPU disabled)");
     } else {
         // GPU mode: use Godot RenderingDevice.
-        // For the first stability step, we only run the RenderingDevice self-tests.
-        // This validates we can create/dispatch/async-readback without crashing.
+        // Run RenderingDevice self-tests, then initialize Simulation.
+        // If shaders are missing, PSO creation will warn once per kernel and Simulation will remain inert.
         m_gpu_mode_active = true;
         m_pPPLL.reset();
         m_pShortCut.reset();
@@ -447,10 +451,51 @@ void TressFXCharacter::refresh_backend_mode() {
             UtilityFunctions::push_warning("TressFXCharacter: GPU mode requested but EI_Device is null");
         }
 
-        UtilityFunctions::print("TressFXCharacter: debug disabled -> GPU mode (RenderingDevice self-test only; simulation disabled until shader pack exists)");
+        // Safe even if shaders are missing (no crash; missing PSOs are handled).
+        m_pSimulation = std::make_unique<Simulation>();
+        m_pSimulation->Initialize();
+
+        // Milestone 3-5: minimal GPU guide-line render.
+        // Feed guide positions (from the first hair object) to EI_Device and request a one-shot render.
+        if (!m_hairStrands.empty()) {
+            godot::PackedByteArray pos_bytes;
+            int vps = 0;
+            int guides = 0;
+            if (m_hairStrands[0]->PackGuidePositionsVec4(pos_bytes, vps, guides)) {
+                UtilityFunctions::print(String("TressFXCharacter: GuideLines source set guides=") + String::num_int64(guides) +
+                                        String(" vps=") + String::num_int64(vps) +
+                                        String(" bytes=") + String::num_int64(pos_bytes.size()));
+                if (EI_Device* device = GetDevice()) {
+                    device->SetGuideLinesSource(pos_bytes, vps, guides);
+                    device->RunMainRDGuideLinesOnce();
+                }
+            } else {
+                UtilityFunctions::push_warning("TressFXCharacter: GuideLines source unavailable (asset not loaded?)");
+            }
+        }
+
+        UtilityFunctions::print("TressFXCharacter: debug disabled -> GPU mode (RenderingDevice + Simulation init; missing shaders will disable GPU work)");
     }
 
     update_process_state();
+}
+
+godot::Ref<godot::Texture2DRD> TressFXCharacter::get_gpu_guide_lines_texture() {
+    EI_Device* device = GetDevice();
+    if (!device) {
+        return godot::Ref<godot::Texture2DRD>();
+    }
+
+    const godot::RID tex = device->GetMainRDGuideLinesTextureRID();
+    if (!tex.is_valid()) {
+        return godot::Ref<godot::Texture2DRD>();
+    }
+
+    if (!m_gpu_guide_lines_texture.is_valid()) {
+        m_gpu_guide_lines_texture.instantiate();
+    }
+    m_gpu_guide_lines_texture->set_texture_rd_rid(tex);
+    return m_gpu_guide_lines_texture;
 }
 
 void TressFXCharacter::update_process_state() {

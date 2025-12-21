@@ -4,6 +4,7 @@
 #include <string>
 
 #include <godot_cpp/classes/array_mesh.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 
 class EI_Scene;
 class EI_CommandContext;
@@ -44,6 +45,11 @@ public:
 
     int GetGuideStrandCount() const;
     int GetTotalStrandCount() const;
+
+    // Packs guide strand vertex positions into a tightly-packed std430-friendly buffer.
+    // Layout: vec4 position (xyz used, w=1). Count = guide_strands * vertices_per_strand.
+    // Returns false if the asset isn't loaded.
+    bool PackGuidePositionsVec4(godot::PackedByteArray& out_bytes, int& out_vertices_per_strand, int& out_guide_strands) const;
 
 private:
     std::unique_ptr<TressFXHairObject> m_pStrands;

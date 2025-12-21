@@ -399,6 +399,50 @@ int HairStrands::GetGuideStrandCount() const {
     return (int)m_asset->m_numGuideStrands;
 }
 
+bool HairStrands::PackGuidePositionsVec4(godot::PackedByteArray& out_bytes, int& out_vertices_per_strand, int& out_guide_strands) const {
+    out_bytes = godot::PackedByteArray();
+    out_vertices_per_strand = 0;
+    out_guide_strands = 0;
+
+    if (!m_asset) {
+        return false;
+    }
+
+    const int vps = (int)m_asset->m_numVerticesPerStrand;
+    const int guide_strands = (int)m_asset->m_numGuideStrands;
+    if (vps <= 0 || guide_strands <= 0) {
+        return false;
+    }
+
+    const int follow_per_guide = (int)m_asset->m_numFollowStrandsPerGuide;
+    const int guide_stride = follow_per_guide + 1;
+
+    const int total_positions = guide_strands * vps;
+    const int bytes_per_pos = 16; // vec4
+    const int total_bytes = total_positions * bytes_per_pos;
+    out_bytes.resize(total_bytes);
+    uint8_t* dst_u8 = out_bytes.ptrw();
+
+    float* dst = reinterpret_cast<float*>(dst_u8);
+    int out_i = 0;
+    for (int g = 0; g < guide_strands; ++g) {
+        const int strand_index = g * guide_stride;
+        const int base = strand_index * vps;
+        for (int v = 0; v < vps; ++v) {
+            const Vector3& p = m_asset->m_positions[base + v];
+            dst[out_i * 4 + 0] = p.x;
+            dst[out_i * 4 + 1] = p.y;
+            dst[out_i * 4 + 2] = p.z;
+            dst[out_i * 4 + 3] = 1.0f;
+            out_i++;
+        }
+    }
+
+    out_vertices_per_strand = vps;
+    out_guide_strands = guide_strands;
+    return true;
+}
+
 int HairStrands::GetTotalStrandCount() const {
     if (!m_asset) {
         return 0;

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "tressfx_node.h"
@@ -55,6 +56,10 @@ public:
     void set_debug_hair_offset(const godot::Vector3& offset);
     godot::Vector3 get_debug_hair_offset() const;
 
+    // GPU bring-up output: offscreen guide-lines texture rendered via RenderingDevice.
+    // This is intended for debugging (TextureRect/Sprite3D/etc), not final hair rendering.
+    godot::Ref<godot::Texture2DRD> get_gpu_guide_lines_texture();
+
 private:
     std::vector<TressFXHairNode::TressFXObjectDescription> m_hairDescriptions;
     std::vector<TressFXHairNode::TressFXCollisionMeshDescription> m_collisionDescriptions;
@@ -101,6 +106,8 @@ private:
 
     double m_time_seconds = 0.0;
     uint64_t m_frame_index = 0;
+
+    godot::Ref<godot::Texture2DRD> m_gpu_guide_lines_texture;
 };
 
 #endif // TRESSFX_CHARACTER_H

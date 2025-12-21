@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include <godot_cpp/classes/rd_vertex_attribute.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 
 typedef int EI_ResourceFormat;
@@ -190,6 +192,16 @@ public:
     // Creates an R32_UINT storage texture, writes a value in a compute shader, and reads it back async.
     void RunMainRDImageSelfTestOnce();
 
+    // Milestone 3-5 (minimal GPU guide-line render):
+    // Provide guide positions (vec4 std430) then request an offscreen render on the main RD.
+    // The output is a color texture RID (wrap it in Texture2DRD to display).
+    void SetGuideLinesSource(const godot::PackedByteArray& guide_positions_vec4, int vertices_per_strand, int guide_strands);
+    void RunMainRDGuideLinesOnce();
+    godot::RID GetMainRDGuideLinesTextureRID() const;
+
+    // Internal: render-thread task pulls the latest source under a mutex.
+    bool PopGuideLinesSourceForRenderThread(godot::PackedByteArray& out_positions_vec4, godot::PackedByteArray& out_viewproj_mat4, int& out_vertices_per_strand, int& out_guide_strands);
+
     // Minimal submission hook (used by self-test and later by simulation/render integration).
     void EndAndSubmitCommandBuffer();
     
@@ -217,6 +229,20 @@ private:
     std::unique_ptr<EI_Resource> m_default_linear_sampler;
 
     EI_CommandContext m_currentCommandBuffer;
+
+    // Guide-line debug source data (main thread) -> consumed on render thread.
+    mutable std::mutex m_guidelines_mutex;
+    godot::PackedByteArray m_guidelines_positions_vec4;
+    godot::PackedByteArray m_guidelines_viewproj_mat4;
+    int m_guidelines_vertices_per_strand = 0;
+    int m_guidelines_guide_strands = 0;
+    bool m_guidelines_dirty = false;
 };
 
 EI_Device * GetDevice();
+
+// NOTE: EI_Device owns Godot Variant types (PackedByteArray, RID, etc) and must not be
+// constructed during DLL load (before godot-cpp initializes the interface pointers).
+// These helpers are called from the GDExtension init/terminate hooks.
+void InitializeGodotEngineInterface();
+void ShutdownGodotEngineInterface();
