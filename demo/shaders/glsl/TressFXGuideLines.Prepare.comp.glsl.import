@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://beeyqr4845n0j"
+path="res://.godot/imported/TressFXGuideLines.Prepare.comp.glsl-62de2cb6952249dfa331017b200ac56a.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXGuideLines.Prepare.comp.glsl"
+dest_files=["res://.godot/imported/TressFXGuideLines.Prepare.comp.glsl-62de2cb6952249dfa331017b200ac56a.res"]
+
+[params]
+

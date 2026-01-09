@@ -74,6 +74,17 @@ void TressFXCharacter::_process(double delta) {
     m_frame_index++;
     m_time_seconds += delta;
 
+    // The main RenderingDevice can be safest to touch via render-thread scheduling after the
+    // scene is fully running. If we queued the guide-lines milestone during _ready(),
+    // kick it here on the first process tick.
+    if (m_pending_gpu_guidelines_render) {
+        if (EI_Device* device = GetDevice()) {
+            device->RunMainRDGuideLinesOnce();
+            UtilityFunctions::print("TressFXCharacter: requested GuideLines render on main RD");
+        }
+        m_pending_gpu_guidelines_render = false;
+    }
+
     if (m_debug_draw_hair_lines) {
         update_debug_hair_lines();
     }
@@ -430,24 +441,21 @@ void TressFXCharacter::refresh_backend_mode() {
     if (m_debug_draw_hair_lines) {
         // Debug/CPU mode: show CPU guide lines and keep GPU objects off.
         m_gpu_mode_active = false;
+        m_pending_gpu_guidelines_render = false;
         m_pPPLL.reset();
         m_pShortCut.reset();
         m_pSimulation.reset();
         UtilityFunctions::print("TressFXCharacter: debug enabled -> CPU debug render (GPU disabled)");
     } else {
         // GPU mode: use Godot RenderingDevice.
-        // Run RenderingDevice self-tests, then initialize Simulation.
+        // Initialize Simulation and run the current GPU milestone.
         // If shaders are missing, PSO creation will warn once per kernel and Simulation will remain inert.
         m_gpu_mode_active = true;
         m_pPPLL.reset();
         m_pShortCut.reset();
         m_pSimulation.reset();
 
-        if (EI_Device* device = GetDevice()) {
-            device->RunSelfTestOnce();
-            device->RunMainRDSelfTestOnce();
-            device->RunMainRDImageSelfTestOnce();
-        } else {
+        if (!GetDevice()) {
             UtilityFunctions::push_warning("TressFXCharacter: GPU mode requested but EI_Device is null");
         }
 
@@ -467,7 +475,9 @@ void TressFXCharacter::refresh_backend_mode() {
                                         String(" bytes=") + String::num_int64(pos_bytes.size()));
                 if (EI_Device* device = GetDevice()) {
                     device->SetGuideLinesSource(pos_bytes, vps, guides);
-                    device->RunMainRDGuideLinesOnce();
+                    // Defer the actual main-RD work to _process() (first frame) to avoid
+                    // scheduling too early during scene initialization.
+                    m_pending_gpu_guidelines_render = true;
                 }
             } else {
                 UtilityFunctions::push_warning("TressFXCharacter: GuideLines source unavailable (asset not loaded?)");

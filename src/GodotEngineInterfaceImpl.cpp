@@ -533,7 +533,15 @@ void EI_Device::SetViewportAndScissor(EI_CommandContext& /*commandContext*/, uin
 static PackedByteArray load_file_bytes_or_empty(const String& path) {
     Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
     if (!f.is_valid()) {
-        return PackedByteArray();
+        // Compatibility: demo assets live under res://demo/shaders/*, while the engine-interface
+        // code historically used res://shaders/*. Try the demo path as a fallback.
+        if (path.begins_with("res://shaders/")) {
+            const String alt = String("res://demo/") + path.substr(String("res://").length(), path.length() - String("res://").length());
+            f = FileAccess::open(alt, FileAccess::READ);
+        }
+        if (!f.is_valid()) {
+            return PackedByteArray();
+        }
     }
     const int64_t len = f->get_length();
     if (len <= 0) {
@@ -545,7 +553,14 @@ static PackedByteArray load_file_bytes_or_empty(const String& path) {
 static String load_file_text_or_empty(const String& path) {
     Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
     if (!f.is_valid()) {
-        return String();
+        // Compatibility fallback (see load_file_bytes_or_empty).
+        if (path.begins_with("res://shaders/")) {
+            const String alt = String("res://demo/") + path.substr(String("res://").length(), path.length() - String("res://").length());
+            f = FileAccess::open(alt, FileAccess::READ);
+        }
+        if (!f.is_valid()) {
+            return String();
+        }
     }
     return f->get_as_text();
 }
@@ -785,9 +800,10 @@ std::unique_ptr<EI_PSO> EI_Device::CreateComputeShaderPSO(const char* shaderName
 
     const String debug_name = String(shaderName ? shaderName : "compute") + String("::") + String(entryPoint ? entryPoint : "main");
 
-    // RenderingDevice ultimately consumes SPIR-V, so prefer loading bytecode if present.
-    Ref<RDShaderSPIRV> spirv;
-    {
+    // Prefer compiling from GLSL at runtime for clarity/debuggability.
+    // Fallback to precompiled SPIR-V only if GLSL is missing or fails.
+    Ref<RDShaderSPIRV> spirv = compile_spirv_from_glsl(rd, RenderingDevice::SHADER_STAGE_COMPUTE, glsl_path, debug_name);
+    if (!spirv.is_valid()) {
         const PackedByteArray bytecode = load_file_bytes_or_empty(spv_path);
         if (!bytecode.is_empty()) {
             spirv.instantiate();
@@ -795,16 +811,11 @@ std::unique_ptr<EI_PSO> EI_Device::CreateComputeShaderPSO(const char* shaderName
         }
     }
 
-    // Fallback: compile from GLSL source.
-    if (!spirv.is_valid()) {
-        spirv = compile_spirv_from_glsl(rd, RenderingDevice::SHADER_STAGE_COMPUTE, glsl_path, debug_name);
-    }
-
     if (!spirv.is_valid()) {
         warn_missing_shader_once(
             debug_name,
             String("EI_Device::CreateComputeShaderPSO: missing shader for ") + debug_name +
-                String(". SPIR-V=") + spv_path + String(" GLSL=") + glsl_path);
+                String(". GLSL=") + glsl_path + String(" SPIR-V=") + spv_path);
         return std::make_unique<EI_PSO>();
     }
 
@@ -852,26 +863,27 @@ std::unique_ptr<EI_PSO> EI_Device::CreateGraphicsPSO(const char* vertexShaderNam
     Ref<RDShaderSPIRV> spirv;
     spirv.instantiate();
 
-    // Prefer SPIR-V, fallback to GLSL compilation.
+    // Prefer compiling from GLSL at runtime for clarity/debuggability.
+    // Fallback to precompiled SPIR-V only if GLSL is missing or fails.
     {
-        const PackedByteArray vbc = load_file_bytes_or_empty(v_spv);
-        if (!vbc.is_empty()) {
-            spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_VERTEX, vbc);
+        Ref<RDShaderSPIRV> v_stage = compile_spirv_from_glsl(rd, RenderingDevice::SHADER_STAGE_VERTEX, v_glsl, String(vertexShaderName ? vertexShaderName : "vs"));
+        if (v_stage.is_valid()) {
+            spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_VERTEX, v_stage->get_stage_bytecode(RenderingDevice::SHADER_STAGE_VERTEX));
         } else {
-            Ref<RDShaderSPIRV> v_stage = compile_spirv_from_glsl(rd, RenderingDevice::SHADER_STAGE_VERTEX, v_glsl, String(vertexShaderName ? vertexShaderName : "vs"));
-            if (v_stage.is_valid()) {
-                spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_VERTEX, v_stage->get_stage_bytecode(RenderingDevice::SHADER_STAGE_VERTEX));
+            const PackedByteArray vbc = load_file_bytes_or_empty(v_spv);
+            if (!vbc.is_empty()) {
+                spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_VERTEX, vbc);
             }
         }
     }
     {
-        const PackedByteArray fbc = load_file_bytes_or_empty(f_spv);
-        if (!fbc.is_empty()) {
-            spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_FRAGMENT, fbc);
+        Ref<RDShaderSPIRV> f_stage = compile_spirv_from_glsl(rd, RenderingDevice::SHADER_STAGE_FRAGMENT, f_glsl, String(fragmentShaderName ? fragmentShaderName : "fs"));
+        if (f_stage.is_valid()) {
+            spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_FRAGMENT, f_stage->get_stage_bytecode(RenderingDevice::SHADER_STAGE_FRAGMENT));
         } else {
-            Ref<RDShaderSPIRV> f_stage = compile_spirv_from_glsl(rd, RenderingDevice::SHADER_STAGE_FRAGMENT, f_glsl, String(fragmentShaderName ? fragmentShaderName : "fs"));
-            if (f_stage.is_valid()) {
-                spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_FRAGMENT, f_stage->get_stage_bytecode(RenderingDevice::SHADER_STAGE_FRAGMENT));
+            const PackedByteArray fbc = load_file_bytes_or_empty(f_spv);
+            if (!fbc.is_empty()) {
+                spirv->set_stage_bytecode(RenderingDevice::SHADER_STAGE_FRAGMENT, fbc);
             }
         }
     }
@@ -1468,6 +1480,8 @@ struct MainRDGuideLinesState {
     godot::RID gfx_shader;
     godot::RID gfx_pipeline;
     int64_t vertex_format = -1;
+    godot::RID vertex_array;
+    godot::RID dummy_vtx_buffer;
     godot::RID gfx_set;
 
     uint32_t width = 512;
@@ -1497,6 +1511,8 @@ static void cleanup_main_rd_guidelines_on_render_thread() {
     if (st.gfx_set.is_valid()) rd->free_rid(st.gfx_set);
     if (st.gfx_pipeline.is_valid()) rd->free_rid(st.gfx_pipeline);
     if (st.gfx_shader.is_valid()) rd->free_rid(st.gfx_shader);
+    if (st.vertex_array.is_valid()) rd->free_rid(st.vertex_array);
+    if (st.dummy_vtx_buffer.is_valid()) rd->free_rid(st.dummy_vtx_buffer);
     if (st.framebuffer.is_valid()) rd->free_rid(st.framebuffer);
     if (st.fb_format != -1) {
         // framebuffer formats are int64 ids; no free call.
@@ -1578,6 +1594,8 @@ static void ensure_main_rd_guidelines_resources(RenderingDevice* rd, const Packe
         (!st.line_vertices.is_valid()) ||
         (!st.compute_pipeline.is_valid()) ||
         (!st.gfx_pipeline.is_valid()) ||
+        (!st.vertex_array.is_valid()) ||
+        (!st.dummy_vtx_buffer.is_valid()) ||
         (!st.color_tex.is_valid()) ||
         (!st.framebuffer.is_valid());
 
@@ -1669,21 +1687,20 @@ static void ensure_main_rd_guidelines_resources(RenderingDevice* rd, const Packe
         st.color_tex = rd->texture_create(fmt, view);
         rd->set_resource_name(st.color_tex, "tressfx_guidelines_color");
 
-        Ref<RDAttachmentFormat> a;
-        a.instantiate();
-        a->set_format(RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
-        a->set_samples(RenderingDevice::TEXTURE_SAMPLES_1);
-        a->set_usage_flags((uint32_t)RenderingDevice::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT);
-
-        TypedArray<RDAttachmentFormat> atts;
-        atts.push_back(a);
-        st.fb_format = rd->framebuffer_format_create(atts);
-
+        // IMPORTANT: let Godot derive the framebuffer format from the texture.
+        // Validating against a manually-created framebuffer format can fail if any implicit
+        // format/usage details differ.
         TypedArray<RID> texs;
         texs.push_back(st.color_tex);
-        st.framebuffer = rd->framebuffer_create(texs, st.fb_format);
+        st.framebuffer = rd->framebuffer_create(texs);
         if (!st.framebuffer.is_valid()) {
             UtilityFunctions::push_warning("GuideLines: framebuffer_create failed");
+            return;
+        }
+
+        st.fb_format = rd->framebuffer_get_format(st.framebuffer);
+        if (st.fb_format < 0) {
+            UtilityFunctions::push_warning("GuideLines: framebuffer_get_format failed");
             return;
         }
     }
@@ -1703,11 +1720,34 @@ static void ensure_main_rd_guidelines_resources(RenderingDevice* rd, const Packe
             return;
         }
 
-        // Vertex shader uses gl_VertexIndex + storage buffer fetch, so vertex format can be empty.
+        // Godot's RD validation requires a real vertex format + bound vertex array for draw_list_draw.
+        // We provide a dummy position attribute (location=0) and a zero-filled vertex buffer.
+        Ref<RDVertexAttribute> a0;
+        a0.instantiate();
+        a0->set_location(0);
+        a0->set_offset(0);
+        a0->set_format(RenderingDevice::DATA_FORMAT_R32G32B32_SFLOAT);
+        a0->set_stride(12);
+        a0->set_frequency(RenderingDevice::VERTEX_FREQUENCY_VERTEX);
+
         TypedArray<RDVertexAttribute> attrs;
+        attrs.push_back(a0);
         st.vertex_format = rd->vertex_format_create(attrs);
         if (st.vertex_format < 0) {
             UtilityFunctions::push_warning("GuideLines: vertex_format_create failed");
+            return;
+        }
+
+        // Allocate a dummy vertex buffer of the right size.
+        const uint32_t vb_bytes = (uint32_t)st.vertex_count * 12u;
+        st.dummy_vtx_buffer = rd->vertex_buffer_create(vb_bytes);
+        rd->set_resource_name(st.dummy_vtx_buffer, "tressfx_guidelines_dummy_vb");
+
+        TypedArray<RID> buffers;
+        buffers.push_back(st.dummy_vtx_buffer);
+        st.vertex_array = rd->vertex_array_create((uint32_t)st.vertex_count, st.vertex_format, buffers);
+        if (!st.vertex_array.is_valid()) {
+            UtilityFunctions::push_warning("GuideLines: vertex_array_create failed");
             return;
         }
 
@@ -1791,6 +1831,11 @@ static void ensure_main_rd_guidelines_resources(RenderingDevice* rd, const Packe
 }
 
 static void run_main_rd_guidelines_once_on_render_thread() {
+    static bool s_logged = false;
+    if (!s_logged) {
+        UtilityFunctions::print("GuideLines: render-thread callback entered");
+        s_logged = true;
+    }
     RenderingServer* rs = RenderingServer::get_singleton();
     if (!rs) {
         UtilityFunctions::push_warning("GuideLines: RenderingServer is null");
@@ -1866,7 +1911,9 @@ static void run_main_rd_guidelines_once_on_render_thread() {
 
     rd->draw_list_bind_render_pipeline(dl, st.gfx_pipeline);
     rd->draw_list_bind_uniform_set(dl, st.gfx_set, 0);
-    rd->draw_list_draw(dl, /*use_indices=*/false, /*instances=*/1, /*procedural_vertex_count=*/(uint32_t)st.vertex_count);
+    rd->draw_list_bind_vertex_array(dl, st.vertex_array);
+    // Draw using the bound vertex array count (procedural count = 0).
+    rd->draw_list_draw(dl, /*use_indices=*/false, /*instances=*/1, /*procedural_vertex_count=*/0);
     rd->draw_list_end();
 }
 

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://drnu0rku10rec"
+path="res://.godot/imported/tressfx_guidelines.frag.glsl-b879fe33c2195d9770c3685fb3fb676f.res"
+
+[deps]
+
+source_file="res://shaders/glsl/tressfx_guidelines.frag.glsl"
+dest_files=["res://.godot/imported/tressfx_guidelines.frag.glsl-b879fe33c2195d9770c3685fb3fb676f.res"]
+
+[params]
+

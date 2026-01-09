@@ -80,6 +80,7 @@ private:
     // - disabled: use the GPU path (simulation/rendering bring-up)
     bool m_debug_draw_hair_lines = false;
     bool m_gpu_mode_active = false;
+    bool m_pending_gpu_guidelines_render = false;
     int m_debug_max_guide_strands = 256;
 
     // Extra local-space offset applied to the debug root (after the facing adjustment).

@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 import os
 import sys
+import datetime
+import re
 
 env = SConscript("godot-cpp/SConstruct")
 
@@ -21,6 +23,80 @@ sources += Glob("TressFX/src/Math/*.cpp")
 # Exclude sample wrappers that depend on Cauldron/DirectX
 # sources += ["TressFX/src/Simulation.cpp", "TressFX/src/HairStrands.cpp", "TressFX/src/SDF.cpp"]
 
+def _sanitize_build_id(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+    return s
+
+def _should_use_unique_dll() -> bool:
+    # Opt-in on non-Windows; default-on on Windows.
+    val = ARGUMENTS.get("unique_dll", None)
+    if val is None:
+        return env.get("platform") == "windows"
+    return str(val).lower() not in ("0", "false", "no", "off")
+
+build_id = _sanitize_build_id(ARGUMENTS.get("build_id", os.environ.get("GDEXT_BUILD_ID", "")))
+if not build_id and _should_use_unique_dll():
+    # Timestamp build id so rebuilds don't try to overwrite a locked DLL.
+    build_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def _update_gdextension_library_for_current_build(dll_basename: str):
+    # Patch ONLY the entry for the current platform/target/arch.
+    gdext_path = os.path.join("demo", "bin", "gdexample.gdextension")
+    try:
+        with open(gdext_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines(True)
+    except OSError:
+        return
+
+    platform = env.get("platform")
+    arch = env.get("arch")
+    target = env.get("target")
+
+    # Map SCons target names to .gdextension keys.
+    if target == "template_debug":
+        cfg = "debug"
+    elif target == "template_release":
+        cfg = "release"
+    else:
+        cfg = target
+
+    # Godot expects windows.debug.x86_64 style keys.
+    key = f"{platform}.{cfg}.{arch}"
+    new_value = f'res://bin/{dll_basename}'
+
+    out = []
+    changed = False
+    in_libraries = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower() == "[libraries]":
+            in_libraries = True
+            out.append(line)
+            continue
+        if stripped.startswith("[") and stripped.endswith("]") and stripped.lower() != "[libraries]":
+            in_libraries = False
+
+        if in_libraries and stripped.startswith(key) and "=" in line:
+            # Preserve indentation and key formatting.
+            prefix = line.split("=", 1)[0]
+            out.append(f'{prefix}= "{new_value}"\n')
+            changed = True
+        else:
+            out.append(line)
+
+    if not changed:
+        # If the entry wasn't present, do nothing (keeps file stable).
+        return
+
+    try:
+        with open(gdext_path, "w", encoding="utf-8", newline="") as f:
+            f.writelines(out)
+    except OSError:
+        return
+
 if env["platform"] == "macos":
     library = env.SharedLibrary(
         "demo/bin/libgdexample.{}.{}.framework/libgdexample.{}.{}".format(
@@ -29,9 +105,16 @@ if env["platform"] == "macos":
         source=sources,
     )
 else:
-    library = env.SharedLibrary(
-        "demo/bin/libgdexample{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
-        source=sources,
-    )
+    base = "demo/bin/libgdexample{}".format(env["suffix"])
+    if build_id:
+        base += ".{}".format(build_id)
+    out_path = base + env["SHLIBSUFFIX"]
+
+    library = env.SharedLibrary(out_path, source=sources)
+
+    # Keep the demo's .gdextension pointing at the freshly-built filename.
+    # This prevents Windows from refusing to overwrite/reload a locked DLL.
+    dll_basename = os.path.basename(out_path)
+    _update_gdextension_library_for_current_build(dll_basename)
 
 Default(library)
