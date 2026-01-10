@@ -1,6 +1,7 @@
-[gd_scene load_steps=3 format=3 uid="uid://c7ham3abkuxe2"]
+[gd_scene load_steps=4 format=3 uid="uid://c7ham3abkuxe2"]
 
 [ext_resource type="PackedScene" uid="uid://jaaxkayekveb" path="res://babylon.tscn" id="1_ig7tw"]
+[ext_resource type="Script" path="res://guidelines_viewer.gd" id="2_guides"]
 
 [sub_resource type="Environment" id="Environment_ig7tw"]
 ambient_light_source = 2
@@ -16,3 +17,16 @@ fov = 51.2
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_ig7tw")
+
+[node name="GuideLinesViewer" type="CanvasLayer" parent="."]
+script = ExtResource("2_guides")
+character_path = NodePath("../babylon/TressFXCharacter")
+
+[node name="TextureRect" type="TextureRect" parent="GuideLinesViewer"]
+anchor_right = 0.0
+anchor_bottom = 0.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 520.0
+offset_bottom = 520.0
+mouse_filter = 2

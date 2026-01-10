@@ -56,6 +56,9 @@ public:
     void set_debug_hair_offset(const godot::Vector3& offset);
     godot::Vector3 get_debug_hair_offset() const;
 
+    void set_enable_simulation(bool enabled);
+    bool get_enable_simulation() const;
+
     // GPU bring-up output: offscreen guide-lines texture rendered via RenderingDevice.
     // This is intended for debugging (TextureRect/Sprite3D/etc), not final hair rendering.
     godot::Ref<godot::Texture2DRD> get_gpu_guide_lines_texture();
@@ -82,6 +85,10 @@ private:
     bool m_gpu_mode_active = false;
     bool m_pending_gpu_guidelines_render = false;
     int m_debug_max_guide_strands = 256;
+
+    // If enabled, we initialize and tick TressFXSimulation.
+    // Default false until the required compute shaders are ported.
+    bool m_enable_simulation = false;
 
     // Extra local-space offset applied to the debug root (after the facing adjustment).
     // Useful to correct a constant rest-pose misalignment between the exported hair asset

@@ -21,6 +21,8 @@
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <godot_cpp/core/object.hpp>
+
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -29,7 +31,18 @@
 
 using namespace godot;
 
+static RenderingDevice* get_valid_rd_from_instance_id(uint64_t rd_instance_id) {
+    if (rd_instance_id == 0) {
+        return nullptr;
+    }
+    Object* obj = ObjectDB::get_instance(rd_instance_id);
+    return Object::cast_to<RenderingDevice>(obj);
+}
+
 static EI_Device* g_device_singleton = nullptr;
+
+// Forward declaration: defined later in this file.
+static void cleanup_main_rd_guidelines_on_render_thread();
 
 EI_Device* GetDevice() {
     return g_device_singleton;
@@ -46,30 +59,49 @@ void ShutdownGodotEngineInterface() {
     if (!g_device_singleton) {
         return;
     }
+
+    // Best-effort cleanup of main-RD debug resources.
+    // Must be scheduled on the render thread.
+    if (RenderingServer* rs = RenderingServer::get_singleton()) {
+        rs->call_on_render_thread(callable_mp_static(&cleanup_main_rd_guidelines_on_render_thread));
+        // Try to ensure the render-thread callback runs before shutdown progresses.
+        rs->force_sync();
+    }
+
     memdelete(g_device_singleton);
     g_device_singleton = nullptr;
 }
 
 EI_BindSet::~EI_BindSet() {
-    if (rd && rid.is_valid()) {
-        rd->free_rid(rid);
+    if (!rid.is_valid()) {
+        return;
+    }
+    RenderingDevice* live_rd = get_valid_rd_from_instance_id(rd_instance_id);
+    if (live_rd) {
+        live_rd->free_rid(rid);
     }
 }
 
 EI_PSO::~EI_PSO() {
-    if (rd) {
-        if (pipeline.is_valid()) {
-            rd->free_rid(pipeline);
-        }
-        if (shader.is_valid()) {
-            rd->free_rid(shader);
-        }
+    RenderingDevice* live_rd = get_valid_rd_from_instance_id(rd_instance_id);
+    if (!live_rd) {
+        return;
+    }
+    if (pipeline.is_valid()) {
+        live_rd->free_rid(pipeline);
+    }
+    if (shader.is_valid()) {
+        live_rd->free_rid(shader);
     }
 }
 
 EI_Resource::~EI_Resource() {
-    if (rd && rid.is_valid()) {
-        rd->free_rid(rid);
+    if (!rid.is_valid()) {
+        return;
+    }
+    RenderingDevice* live_rd = get_valid_rd_from_instance_id(rd_instance_id);
+    if (live_rd) {
+        live_rd->free_rid(rid);
     }
 }
 
@@ -270,6 +302,7 @@ std::unique_ptr<EI_Resource> EI_Device::CreateBufferResource(const int structSiz
 
     auto res = std::make_unique<EI_Resource>();
     res->rd = rd;
+    res->rd_instance_id = rd->get_instance_id();
     res->rid = buffer;
     res->size_bytes = size_bytes;
     res->m_ResourceType = EI_ResourceType::Buffer;
@@ -319,6 +352,7 @@ std::unique_ptr<EI_Resource> EI_Device::CreateUint32Resource(const int width, co
 
     auto res = std::make_unique<EI_Resource>();
     res->rd = rd;
+    res->rd_instance_id = rd->get_instance_id();
     res->rid = tex;
     res->width = width;
     res->height = height;
@@ -390,6 +424,7 @@ std::unique_ptr<EI_Resource> EI_Device::CreateSampler(EI_Filter MinFilter, EI_Fi
 
     auto res = std::make_unique<EI_Resource>();
     res->rd = rd;
+    res->rd_instance_id = rd->get_instance_id();
     res->rid = samp;
     res->m_ResourceType = EI_ResourceType::Sampler;
     return res;
@@ -463,6 +498,7 @@ std::unique_ptr<EI_BindSet> EI_Device::CreateBindSet(EI_BindLayout* layout, EI_B
 
     auto set = std::make_unique<EI_BindSet>();
     set->rd = rd;
+    set->rd_instance_id = rd->get_instance_id();
     set->set_index = (uint32_t)layout->set_index;
     set->uniforms = uniforms;
     return set;
@@ -511,6 +547,7 @@ EI_Resource* EI_Device::GetDefaultWhiteTexture() {
 
     m_default_white_texture = std::make_unique<EI_Resource>();
     m_default_white_texture->rd = rd;
+    m_default_white_texture->rd_instance_id = rd->get_instance_id();
     m_default_white_texture->rid = tex;
     m_default_white_texture->width = 1;
     m_default_white_texture->height = 1;
@@ -713,8 +750,18 @@ static Ref<RDShaderSPIRV> compile_spirv_from_glsl(RenderingDevice* rd, Rendering
         return Ref<RDShaderSPIRV>();
     }
 
+    // Targeted logging for crash diagnosis during TressFX simulation bring-up.
+    // This is intentionally minimal (only prints for the simulation kernels).
+    const bool is_tressfx_sim = debug_name.begins_with("TressFXSimulation");
+    if (is_tressfx_sim) {
+        UtilityFunctions::print(String("[TressFX] Compiling GLSL: ") + debug_name + String(" (") + path + String(")"));
+    }
+
     const String source_text = load_file_text_or_empty(path);
     if (source_text.is_empty()) {
+        if (is_tressfx_sim) {
+            UtilityFunctions::push_warning(String("[TressFX] GLSL source missing/empty: ") + debug_name + String(" (") + path + String(")"));
+        }
         return Ref<RDShaderSPIRV>();
     }
 
@@ -733,6 +780,10 @@ static Ref<RDShaderSPIRV> compile_spirv_from_glsl(RenderingDevice* rd, Rendering
     if (!err.is_empty()) {
         UtilityFunctions::push_warning(String("GLSL compile error for ") + debug_name + String(" (") + path + String("): \n") + err);
         return Ref<RDShaderSPIRV>();
+    }
+
+    if (is_tressfx_sim) {
+        UtilityFunctions::print(String("[TressFX] GLSL compiled OK: ") + debug_name);
     }
 
     return spirv;
@@ -834,6 +885,7 @@ std::unique_ptr<EI_PSO> EI_Device::CreateComputeShaderPSO(const char* shaderName
 
     auto pso = std::make_unique<EI_PSO>();
     pso->rd = rd;
+    pso->rd_instance_id = rd->get_instance_id();
     pso->m_bp = EI_BP_COMPUTE;
     pso->shader = shader;
     pso->pipeline = pipeline;
@@ -966,6 +1018,7 @@ std::unique_ptr<EI_PSO> EI_Device::CreateGraphicsPSO(const char* vertexShaderNam
 
     auto pso = std::make_unique<EI_PSO>();
     pso->rd = rd;
+    pso->rd_instance_id = rd->get_instance_id();
     pso->m_bp = EI_BP_GRAPHICS;
     pso->shader = shader;
     pso->pipeline = pipeline;

@@ -3,6 +3,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/variant.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <vector>
 #include "tressfx_character.h"
@@ -55,6 +56,10 @@ void TressFXHairNode::_init() {
 }
 
 void TressFXHairNode::_ready() {
+	if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
+		return;
+	}
+
     // On ready, attempt to find a parent TressFXCharacter and register our description.
     // We only register a minimal description; the character will own the runtime objects.
     Node *p = get_parent();

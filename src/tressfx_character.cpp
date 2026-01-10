@@ -6,6 +6,7 @@
 #include <godot_cpp/classes/skeleton3d.hpp>
 #include <godot_cpp/classes/bone_attachment3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include "tressfx_collision_node.h"
@@ -34,6 +35,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_debug_hair_offset"), &TressFXCharacter::get_debug_hair_offset);
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "debug_hair_offset"), "set_debug_hair_offset", "get_debug_hair_offset");
 
+    ClassDB::bind_method(D_METHOD("set_enable_simulation", "enabled"), &TressFXCharacter::set_enable_simulation);
+    ClassDB::bind_method(D_METHOD("get_enable_simulation"), &TressFXCharacter::get_enable_simulation);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enable_simulation"), "set_enable_simulation", "get_enable_simulation");
+
     ClassDB::bind_method(D_METHOD("get_gpu_guide_lines_texture"), &TressFXCharacter::get_gpu_guide_lines_texture);
     ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "gpu_guide_lines_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "", "get_gpu_guide_lines_texture");
 }
@@ -45,6 +50,11 @@ TressFXCharacter::~TressFXCharacter() {}
 void TressFXCharacter::_init() {}
 
 void TressFXCharacter::_ready() {
+	if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
+		// Don't load assets / touch RenderingDevice when just editing scenes.
+		return;
+	}
+
     // Register any existing child hair/collision nodes in case they were created
     // before this character (handles creation order in the editor).
     int cnt = get_child_count();
@@ -71,16 +81,27 @@ void TressFXCharacter::_ready() {
 }
 
 void TressFXCharacter::_process(double delta) {
+    if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
+        return;
+    }
+
     m_frame_index++;
     m_time_seconds += delta;
 
-    // The main RenderingDevice can be safest to touch via render-thread scheduling after the
-    // scene is fully running. If we queued the guide-lines milestone during _ready(),
-    // kick it here on the first process tick.
-    if (m_pending_gpu_guidelines_render) {
+    // GPU guide-lines baseline -> next milestone stepping stone:
+    // Each frame, update skinned guide positions (CPU skinning for now), upload to GPU,
+    // then render to the offscreen guide-lines texture on the render thread.
+    if (m_gpu_mode_active) {
         if (EI_Device* device = GetDevice()) {
-            device->RunMainRDGuideLinesOnce();
-            UtilityFunctions::print("TressFXCharacter: requested GuideLines render on main RD");
+            if (!m_hairStrands.empty()) {
+                godot::PackedByteArray pos_bytes;
+                int vps = 0;
+                int guides = 0;
+                if (m_hairStrands[0]->PackGuidePositionsVec4(pos_bytes, vps, guides)) {
+                    device->SetGuideLinesSource(pos_bytes, vps, guides);
+                    device->RunMainRDGuideLinesOnce();
+                }
+            }
         }
         m_pending_gpu_guidelines_render = false;
     }
@@ -282,6 +303,15 @@ void TressFXCharacter::load_all_assets() {
     refresh_debug_hair_lines();
 }
 
+void TressFXCharacter::set_enable_simulation(bool enabled) {
+    m_enable_simulation = enabled;
+    refresh_backend_mode();
+}
+
+bool TressFXCharacter::get_enable_simulation() const {
+    return m_enable_simulation;
+}
+
 void TressFXCharacter::set_debug_draw_hair_lines(bool enabled) {
     m_debug_draw_hair_lines = enabled;
     refresh_backend_mode();
@@ -459,9 +489,12 @@ void TressFXCharacter::refresh_backend_mode() {
             UtilityFunctions::push_warning("TressFXCharacter: GPU mode requested but EI_Device is null");
         }
 
-        // Safe even if shaders are missing (no crash; missing PSOs are handled).
-        m_pSimulation = std::make_unique<Simulation>();
-        m_pSimulation->Initialize();
+        // Simulation is optional for now. Until we port the required compute shaders,
+        // enabling it will spam missing-shader warnings.
+        if (m_enable_simulation) {
+            m_pSimulation = std::make_unique<Simulation>();
+            m_pSimulation->Initialize();
+        }
 
         // Milestone 3-5: minimal GPU guide-line render.
         // Feed guide positions (from the first hair object) to EI_Device and request a one-shot render.
@@ -484,7 +517,7 @@ void TressFXCharacter::refresh_backend_mode() {
             }
         }
 
-        UtilityFunctions::print("TressFXCharacter: debug disabled -> GPU mode (RenderingDevice + Simulation init; missing shaders will disable GPU work)");
+        UtilityFunctions::print("TressFXCharacter: debug disabled -> GPU mode (RenderingDevice; Simulation optional)");
     }
 
     update_process_state();

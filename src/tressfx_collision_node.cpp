@@ -7,6 +7,7 @@
 #include <godot_cpp/variant/array.hpp>
 #include <vector>
 #include <godot_cpp/classes/skeleton3d.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include "tressfx_character.h"
 
 using namespace godot;
@@ -52,6 +53,10 @@ void TressFXCollisionNode::_init() {
 }
 
 void TressFXCollisionNode::_ready() {
+	if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
+		return;
+	}
+
     // Populate a minimal collision description and register it with parent character if present
     last_collision_description.name = String("collision");
     last_collision_description.tfx_mesh_file = tfx_mesh_file;

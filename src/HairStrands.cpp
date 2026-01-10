@@ -417,6 +417,9 @@ bool HairStrands::PackGuidePositionsVec4(godot::PackedByteArray& out_bytes, int&
     const int follow_per_guide = (int)m_asset->m_numFollowStrandsPerGuide;
     const int guide_stride = follow_per_guide + 1;
 
+    const std::vector<XMMATRIX>& bone_mats = (m_pScene ? m_pScene->GetWorldSpaceSkeletonMats(m_skinNumber) : std::vector<XMMATRIX>{});
+    const bool can_skin = (!bone_mats.empty() && !m_asset->m_boneSkinningData.empty());
+
     const int total_positions = guide_strands * vps;
     const int bytes_per_pos = 16; // vec4
     const int total_bytes = total_positions * bytes_per_pos;
@@ -428,12 +431,47 @@ bool HairStrands::PackGuidePositionsVec4(godot::PackedByteArray& out_bytes, int&
     for (int g = 0; g < guide_strands; ++g) {
         const int strand_index = g * guide_stride;
         const int base = strand_index * vps;
+
+        XMMATRIX bone_matrix;
+        if (can_skin) {
+            const int skin_index = std::min<int>(strand_index, (int)m_asset->m_boneSkinningData.size() - 1);
+            const TressFXBoneSkinningData& skin = m_asset->m_boneSkinningData[skin_index];
+            float weight_sum = 0.0f;
+            for (int i = 0; i < TRESSFX_MAX_INFLUENTIAL_BONE_COUNT; ++i) {
+                const float w = skin.weight[i];
+                if (w <= 0.0f) {
+                    continue;
+                }
+                int bi = (int)skin.boneIndex[i];
+                if (bi < 0) {
+                    bi = 0;
+                }
+                if (bi >= (int)bone_mats.size()) {
+                    bi = 0;
+                }
+                bone_matrix += bone_mats[bi] * w;
+                weight_sum += w;
+            }
+            if (weight_sum > 0.0f) {
+                bone_matrix /= weight_sum;
+            }
+        }
+
         for (int v = 0; v < vps; ++v) {
             const Vector3& p = m_asset->m_positions[base + v];
-            dst[out_i * 4 + 0] = p.x;
-            dst[out_i * 4 + 1] = p.y;
-            dst[out_i * 4 + 2] = p.z;
-            dst[out_i * 4 + 3] = 1.0f;
+            if (can_skin) {
+                const XMVECTOR vin{ p.x, p.y, p.z, 1.0f };
+                const XMVECTOR r = XMVector4Transform(vin, bone_matrix);
+                dst[out_i * 4 + 0] = r.x;
+                dst[out_i * 4 + 1] = r.y;
+                dst[out_i * 4 + 2] = r.z;
+                dst[out_i * 4 + 3] = 1.0f;
+            } else {
+                dst[out_i * 4 + 0] = p.x;
+                dst[out_i * 4 + 1] = p.y;
+                dst[out_i * 4 + 2] = p.z;
+                dst[out_i * 4 + 3] = 1.0f;
+            }
             out_i++;
         }
     }

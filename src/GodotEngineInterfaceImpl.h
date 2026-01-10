@@ -38,6 +38,7 @@ public:
     godot::RID rid;
     uint32_t set_index = 0;
     godot::RenderingDevice* rd = nullptr;
+    uint64_t rd_instance_id = 0;
 
     // Godot ties uniform sets to a specific shader RID. TressFX creates bind sets
     // before PSOs/shaders are available, so we store the RDUniform list and create
@@ -54,6 +55,7 @@ public:
     godot::RID shader;
     godot::RID pipeline;
     godot::RenderingDevice* rd = nullptr;
+    uint64_t rd_instance_id = 0;
 };
 
 class EI_CommandContext {
@@ -107,6 +109,7 @@ public:
 
     EI_ResourceType m_ResourceType = EI_ResourceType::Undefined;
     godot::RenderingDevice* rd = nullptr;
+    uint64_t rd_instance_id = 0;
 };
 
 struct EI_BindLayout {
