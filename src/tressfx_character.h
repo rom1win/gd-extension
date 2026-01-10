@@ -39,6 +39,7 @@ public:
     void _init();
     void _ready();
     void _process(double delta);
+    void _notification(int what);
 
     // Registration API used by child hair/collision nodes
     void register_hair_description(const TressFXHairNode::TressFXObjectDescription &desc);

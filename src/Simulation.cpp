@@ -1,6 +1,9 @@
 #include "Simulation.h"
 #include "GodotEngineInterfaceImpl.h"
 #include "TressFXLayouts.h"
+#include "TressFX/TressFXHairObject.h"
+#include "TressFX/TressFXSettings.h"
+#include "HairStrands.h"
 
 #include <atomic>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -50,18 +53,83 @@ void Simulation::StartSimulation(
     bool bUpdateCollMesh,
     bool bSDFCollisionResponse,
     bool bAsync) {
-    (void)fTime;
-    (void)ctx;
+    // Treat fTime as timestep seconds (passed from Godot's _process(delta)).
     (void)bUpdateCollMesh;
     (void)bSDFCollisionResponse;
     (void)bAsync;
-    // Increment 1: no-op.
-    // This becomes the home for:
-    // - transitioning hair to sim
-    // - running TressFXSimulation steps
-    // - optional collision/SDF steps
+
+    EI_Device* device = GetDevice();
+    if (!device) {
+        return;
+    }
+
+    godot::RenderingDevice* rd = device->GetLocalRenderingDevice();
+    if (!rd) {
+        return;
+    }
+
+    // Ensure the command context targets the local RD.
+    EI_CommandContext& commandContext = device->GetCurrentCommandContext();
+    commandContext.set_rd(rd);
+
+    // Ensure hair objects exist and gather handles.
+    std::vector<TressFXHairObject*> hairObjects;
+    hairObjects.reserve(ctx.hairStrands.size());
+    for (HairStrands* h : ctx.hairStrands) {
+        if (!h) {
+            continue;
+        }
+        if (!h->EnsureTressFXObjectCreated()) {
+            continue;
+        }
+        TressFXHairObject* ho = h->GetTressFXHandle();
+        if (ho) {
+            hairObjects.push_back(ho);
+        }
+    }
+
+    if (hairObjects.empty()) {
+        return;
+    }
+
+    const float dt = (float)fTime;
+    const float timeStep = (dt > 0.0f) ? std::min(std::max(dt, 1.0f / 240.0f), 1.0f / 15.0f) : (1.0f / 60.0f);
+
+    // Simple default simulation settings for bring-up: add some gravity/wind so motion is visible.
+    TressFXSimulationSettings settings;
+    settings.m_gravityMagnitude = 1.5f;
+    settings.m_windMagnitude = 0.8f;
+    settings.m_windDirection[0] = 1.0f;
+    settings.m_windDirection[1] = 0.0f;
+    settings.m_windDirection[2] = 0.0f;
+
+    // Update per-object inputs.
+    // NOTE: bones are written into the mapped sim constant buffer then uploaded by UpdateConstantBuffer
+    // inside TressFXSimulation::Simulate().
+    for (HairStrands* h : ctx.hairStrands) {
+        if (!h || !h->GetTressFXHandle()) {
+            continue;
+        }
+        h->UpdateBones(commandContext);
+        h->GetTressFXHandle()->UpdateSimulationParameters(&settings, timeStep);
+        h->TransitionRenderingToSim(commandContext);
+    }
+
+    // Run the simulation kernels.
+    m_tressFXSimulation->Simulate(commandContext, hairObjects);
+
+    // Transition back so other consumers can read positions as SRV (future rendering).
+    for (HairStrands* h : ctx.hairStrands) {
+        if (!h || !h->GetTressFXHandle()) {
+            continue;
+        }
+        h->TransitionSimToRendering(commandContext);
+    }
+
+    // Submit all queued compute work.
+    device->EndAndSubmitCommandBuffer();
+    device->FlushGPU();
     m_simulationRunning = true;
-    // Keep this extremely light to avoid log spam. The caller (TressFXCharacter) already logs ticks.
 }
 
 void Simulation::WaitOnSimulation() {

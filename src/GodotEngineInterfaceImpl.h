@@ -77,12 +77,15 @@ public:
 
     // Godot RD command list management
     void BeginComputeIfNeeded();
-    void EndAndSubmit();
+    // Ends an open compute list (if any) and submits queued lists.
+    // Returns true iff a submit occurred.
+    bool EndAndSubmit();
 
 private:
     godot::RenderingDevice* rd = nullptr;
     int64_t compute_list = -1;
     EI_PSO* bound_pso = nullptr;
+    bool has_queued_lists = false;
 };
 
 class EI_Marker
@@ -178,6 +181,10 @@ public:
     void OnResize(uint32_t width, uint32_t height) {}
     void SetVSync(bool vSync) {}
     void FlushGPU();
+
+    // Local RenderingDevice accessor (main-thread only). Used for early simulation bring-up
+    // and CPU readback; main-RD work must still be scheduled on the render thread.
+    godot::RenderingDevice* GetLocalRenderingDevice() { return get_rd(); }
     void OnDestroy() {}
     
     void OnBeginFrame(bool bDoAsync) {}
@@ -232,6 +239,10 @@ private:
     std::unique_ptr<EI_Resource> m_default_linear_sampler;
 
     EI_CommandContext m_currentCommandBuffer;
+
+    // Local RenderingDevice submission tracking.
+    // Godot errors if sync() is called without a prior submit().
+    bool m_local_rd_needs_sync = false;
 
     // Guide-line debug source data (main thread) -> consumed on render thread.
     mutable std::mutex m_guidelines_mutex;

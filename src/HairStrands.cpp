@@ -10,9 +10,12 @@
 #include <godot_cpp/variant/array.hpp>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 #include "TressFX/TressFXHairObject.h"
 #include "TressFX/TressFXAsset.h"
+#include "TressFXLayouts.h"
+#include "GodotEngineInterfaceImpl.h"
 #include "GodotTressFXMath.h"
 
 static godot::String bytes_to_hex_prefix(const godot::PackedByteArray& bytes, int64_t max_bytes) {
@@ -218,6 +221,48 @@ HairStrands::HairStrands(
                 godot::String(" followPerGuide=") + godot::String::num_int64(m_asset->m_numFollowStrandsPerGuide));
 }
 
+bool HairStrands::EnsureTressFXObjectCreated() {
+    if (m_pStrands) {
+        return true;
+    }
+    if (!m_asset) {
+        return false;
+    }
+
+    EI_Device* device = GetDevice();
+    if (!device) {
+        godot::UtilityFunctions::push_warning("HairStrands: EnsureTressFXObjectCreated: EI_Device is null");
+        return false;
+    }
+
+    // Ensure global layouts exist before any bind sets are created.
+    if (!GetSimLayout() || !GetSimPosTanLayout() || !GetTressFXParamLayout()) {
+        InitializeAllLayouts(device);
+    }
+
+    godot::RenderingDevice* rd = device->GetLocalRenderingDevice();
+    if (!rd) {
+        godot::UtilityFunctions::push_warning("HairStrands: EnsureTressFXObjectCreated: local RenderingDevice is null");
+        return false;
+    }
+
+    EI_CommandContext& ctx = device->GetCurrentCommandContext();
+    ctx.set_rd(rd);
+
+    m_pStrands = std::make_unique<TressFXHairObject>(
+        m_asset.get(),
+        device,
+        ctx,
+        m_hairObjectName.c_str(),
+        m_renderIndex);
+
+    // Submit uploads performed during construction.
+    device->EndAndSubmitCommandBuffer();
+    device->FlushGPU();
+
+    return m_pStrands != nullptr;
+}
+
 void HairStrands::TransitionSimToRendering(EI_CommandContext& context) {
     if (!m_pStrands) {
         // No GPU resources yet.
@@ -236,10 +281,19 @@ void HairStrands::TransitionRenderingToSim(EI_CommandContext& context) {
 
 void HairStrands::UpdateBones(EI_CommandContext& context) {
     (void)context;
-    // Intentionally no-op in this incremental step.
-    // Once EI_Scene exposes bone matrices in a TressFX-friendly format, we will:
-    // - query skeleton matrices
-    // - call m_pStrands->UpdateBoneMatrices(...)
+
+    if (!m_pStrands || !m_pScene) {
+        return;
+    }
+
+    const std::vector<XMMATRIX>& bone_mats = m_pScene->GetWorldSpaceSkeletonMats(m_skinNumber);
+    if (bone_mats.empty()) {
+        return;
+    }
+
+    // TressFX expects an array of float4x4 matrices.
+    const AMD::float4x4* pBoneMatricesInWS = reinterpret_cast<const AMD::float4x4*>(bone_mats.data());
+    m_pStrands->UpdateBoneMatrices(pBoneMatricesInWS, (int)bone_mats.size());
 }
 
 godot::Ref<godot::ArrayMesh> HairStrands::CreateDebugLineMesh(bool guides_only, int strand_limit) const {
@@ -474,6 +528,78 @@ bool HairStrands::PackGuidePositionsVec4(godot::PackedByteArray& out_bytes, int&
             }
             out_i++;
         }
+    }
+
+    out_vertices_per_strand = vps;
+    out_guide_strands = guide_strands;
+    return true;
+}
+
+bool HairStrands::PackSimulatedGuidePositionsVec4(godot::PackedByteArray& out_bytes, int& out_vertices_per_strand, int& out_guide_strands, int guide_strand_limit) const {
+    out_bytes = godot::PackedByteArray();
+    out_vertices_per_strand = 0;
+    out_guide_strands = 0;
+
+    if (!m_asset || !m_pStrands) {
+        return false;
+    }
+
+    EI_Device* device = GetDevice();
+    if (!device) {
+        return false;
+    }
+
+    godot::RenderingDevice* rd = device->GetLocalRenderingDevice();
+    if (!rd) {
+        return false;
+    }
+
+    EI_Resource* pos_res = m_pStrands->GetDynamicState().GetPositionsResource();
+    if (!pos_res || !pos_res->rid.is_valid()) {
+        return false;
+    }
+
+    const int vps = (int)m_asset->m_numVerticesPerStrand;
+    const int guide_strands_total = (int)m_asset->m_numGuideStrands;
+    if (vps <= 0 || guide_strands_total <= 0) {
+        return false;
+    }
+
+    const int guide_strands = (guide_strand_limit > 0) ? std::min<int>(guide_strands_total, guide_strand_limit) : guide_strands_total;
+
+    const int follow_per_guide = (int)m_asset->m_numFollowStrandsPerGuide;
+    const int guide_stride = follow_per_guide + 1;
+
+    const int total_vertices = m_pStrands->GetNumTotalHairVertices();
+    const int bytes_per_pos = 16; // float4
+    const int total_bytes = total_vertices * bytes_per_pos;
+    if (total_bytes <= 0) {
+        return false;
+    }
+
+    // Ensure GPU work completed (debug bring-up path).
+    device->FlushGPU();
+
+    const godot::PackedByteArray gpu_bytes = rd->buffer_get_data(pos_res->rid, 0, total_bytes);
+    if (gpu_bytes.size() < total_bytes) {
+        return false;
+    }
+
+    const int out_positions = guide_strands * vps;
+    out_bytes.resize(out_positions * bytes_per_pos);
+    uint8_t* dst = out_bytes.ptrw();
+    const uint8_t* src = gpu_bytes.ptr();
+
+    for (int g = 0; g < guide_strands; ++g) {
+        const int strand_index = g * guide_stride;
+        const int base_vertex = strand_index * vps;
+        const int src_off = base_vertex * bytes_per_pos;
+        const int dst_off = (g * vps) * bytes_per_pos;
+        const int copy_bytes = vps * bytes_per_pos;
+        if (src_off + copy_bytes > total_bytes) {
+            break;
+        }
+        std::memcpy(dst + dst_off, src + src_off, (size_t)copy_bytes);
     }
 
     out_vertices_per_strand = vps;

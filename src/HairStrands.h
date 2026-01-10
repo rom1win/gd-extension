@@ -30,6 +30,10 @@ public:
 
     TressFXHairObject* GetTressFXHandle() const { return m_pStrands.get(); }
 
+    // Creates the GPU-backed TressFX hair object (local RenderingDevice) if needed.
+    // Returns true if the object exists after the call.
+    bool EnsureTressFXObjectCreated();
+
     void TransitionSimToRendering(EI_CommandContext& context);
     void TransitionRenderingToSim(EI_CommandContext& context);
     void UpdateBones(EI_CommandContext& context);
@@ -50,6 +54,10 @@ public:
     // Layout: vec4 position (xyz used, w=1). Count = guide_strands * vertices_per_strand.
     // Returns false if the asset isn't loaded.
     bool PackGuidePositionsVec4(godot::PackedByteArray& out_bytes, int& out_vertices_per_strand, int& out_guide_strands) const;
+
+    // Like PackGuidePositionsVec4, but sources positions from the simulated GPU buffer.
+    // This is a bring-up/debug path: it performs a local-RD GPU sync + CPU readback.
+    bool PackSimulatedGuidePositionsVec4(godot::PackedByteArray& out_bytes, int& out_vertices_per_strand, int& out_guide_strands, int guide_strand_limit) const;
 
 private:
     std::unique_ptr<TressFXHairObject> m_pStrands;

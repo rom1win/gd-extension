@@ -39,7 +39,48 @@ static RenderingDevice* get_valid_rd_from_instance_id(uint64_t rd_instance_id) {
     return Object::cast_to<RenderingDevice>(obj);
 }
 
+static void safe_free_uniform_set(RenderingDevice* rd, RID& rid) {
+    if (!rd || !rid.is_valid()) {
+        return;
+    }
+    if (rd->uniform_set_is_valid(rid)) {
+        rd->free_rid(rid);
+    }
+    rid = RID();
+}
+
+static void safe_free_pipeline(RenderingDevice* rd, RID& rid) {
+    if (!rd || !rid.is_valid()) {
+        return;
+    }
+    if (rd->compute_pipeline_is_valid(rid) || rd->render_pipeline_is_valid(rid)) {
+        rd->free_rid(rid);
+    }
+    rid = RID();
+}
+
+static void safe_free_texture(RenderingDevice* rd, RID& rid) {
+    if (!rd || !rid.is_valid()) {
+        return;
+    }
+    if (rd->texture_is_valid(rid)) {
+        rd->free_rid(rid);
+    }
+    rid = RID();
+}
+
+static void safe_free_framebuffer(RenderingDevice* rd, RID& rid) {
+    if (!rd || !rid.is_valid()) {
+        return;
+    }
+    if (rd->framebuffer_is_valid(rid)) {
+        rd->free_rid(rid);
+    }
+    rid = RID();
+}
+
 static EI_Device* g_device_singleton = nullptr;
+static bool g_is_shutting_down = false;
 
 // Forward declaration: defined later in this file.
 static void cleanup_main_rd_guidelines_on_render_thread();
@@ -52,6 +93,7 @@ void InitializeGodotEngineInterface() {
     if (g_device_singleton) {
         return;
     }
+    g_is_shutting_down = false;
     g_device_singleton = memnew(EI_Device);
 }
 
@@ -59,6 +101,10 @@ void ShutdownGodotEngineInterface() {
     if (!g_device_singleton) {
         return;
     }
+
+    // During shutdown, Godot may already be tearing down RenderingDevice internals.
+    // Avoid explicit free_rid() calls from destructors and debug cleanup.
+    g_is_shutting_down = true;
 
     // Best-effort cleanup of main-RD debug resources.
     // Must be scheduled on the render thread.
@@ -73,29 +119,36 @@ void ShutdownGodotEngineInterface() {
 }
 
 EI_BindSet::~EI_BindSet() {
+    if (g_is_shutting_down) {
+        return;
+    }
     if (!rid.is_valid()) {
         return;
     }
     RenderingDevice* live_rd = get_valid_rd_from_instance_id(rd_instance_id);
     if (live_rd) {
-        live_rd->free_rid(rid);
+        safe_free_uniform_set(live_rd, rid);
     }
 }
 
 EI_PSO::~EI_PSO() {
+    if (g_is_shutting_down) {
+        return;
+    }
     RenderingDevice* live_rd = get_valid_rd_from_instance_id(rd_instance_id);
     if (!live_rd) {
         return;
     }
-    if (pipeline.is_valid()) {
-        live_rd->free_rid(pipeline);
-    }
+    safe_free_pipeline(live_rd, pipeline);
     if (shader.is_valid()) {
         live_rd->free_rid(shader);
     }
 }
 
 EI_Resource::~EI_Resource() {
+    if (g_is_shutting_down) {
+        return;
+    }
     if (!rid.is_valid()) {
         return;
     }
@@ -140,19 +193,29 @@ void EI_CommandContext::BeginComputeIfNeeded() {
     compute_list = rd->compute_list_begin();
 }
 
-void EI_CommandContext::EndAndSubmit() {
+bool EI_CommandContext::EndAndSubmit() {
     if (!rd) {
-        return;
-    }
-    if (compute_list == -1) {
-        return;
+        return false;
     }
 
-    rd->compute_list_end();
-    compute_list = -1;
-    bound_pso = nullptr;
+    // End an open compute list if present.
+    if (compute_list != -1) {
+        rd->compute_list_end();
+        compute_list = -1;
+        bound_pso = nullptr;
+        has_queued_lists = true;
+    }
 
-    rd->submit();
+    // Submit any queued command lists (including ones ended early by UpdateBuffer/Clear*).
+    if (has_queued_lists) {
+        rd->submit();
+        // Local RenderingDevice: keep submit/sync paired to avoid "device already submitted".
+        rd->sync();
+        has_queued_lists = false;
+        return true;
+    }
+
+    return false;
 }
 
 void EI_CommandContext::SubmitBarrier(int /*numBarriers*/, EI_Barrier* /*barriers*/) {
@@ -215,6 +278,14 @@ void EI_CommandContext::UpdateBuffer(EI_Resource* res, void* data) {
         return;
     }
 
+    // Godot forbids buffer_update while recording a compute list.
+    if (compute_list != -1) {
+        rd->compute_list_end();
+        compute_list = -1;
+        bound_pso = nullptr;
+        has_queued_lists = true;
+    }
+
     PackedByteArray bytes;
     bytes.resize((int)res->size_bytes);
     std::memcpy(bytes.ptrw(), data, res->size_bytes);
@@ -226,6 +297,14 @@ void EI_CommandContext::ClearUint32Image(EI_Resource* res, uint32_t value) {
     // For bring-up, we do a CPU-side update (slow but correct).
     if (!rd || !res || !res->rid.is_valid() || res->GetWidth() <= 0 || res->GetHeight() <= 0) {
         return;
+    }
+
+    // Godot forbids texture_update while recording a compute list.
+    if (compute_list != -1) {
+        rd->compute_list_end();
+        compute_list = -1;
+        bound_pso = nullptr;
+        has_queued_lists = true;
     }
 
     const int w = res->GetWidth();
@@ -251,6 +330,15 @@ void EI_CommandContext::ClearFloat32Image(EI_Resource* res, float value) {
     if (!rd || !res || !res->rid.is_valid()) {
         return;
     }
+
+    // Godot forbids texture_clear while recording a compute list.
+    if (compute_list != -1) {
+        rd->compute_list_end();
+        compute_list = -1;
+        bound_pso = nullptr;
+        has_queued_lists = true;
+    }
+
     // Best-effort: use texture_clear. Works for float/normalized formats.
     rd->texture_clear(res->rid, Color(value, value, value, value), 0, 1, 0, 1);
 }
@@ -360,6 +448,10 @@ std::unique_ptr<EI_Resource> EI_Device::CreateUint32Resource(const int width, co
 
     // Best-effort clear for bring-up. For array textures, clear each layer.
     if (tex.is_valid()) {
+        // Godot forbids texture_update while a compute/draw list is being recorded.
+        // End/submit any outstanding local-RD command lists before performing immediate updates.
+        EndAndSubmitCommandBuffer();
+
         EI_CommandContext& ctx = GetCurrentCommandContext();
         ctx.set_rd(rd);
         for (uint32_t layer = 0; layer < layers; ++layer) {
@@ -462,8 +554,8 @@ std::unique_ptr<EI_BindSet> EI_Device::CreateBindSet(EI_BindLayout* layout, EI_B
     }
 
     if (layout->set_index < 0) {
-        // If the PSO has not assigned indices yet, default to 0.
-        UtilityFunctions::push_warning("EI_Device::CreateBindSet: layout set_index not assigned; defaulting to 0");
+        // In Godot RD we lazily create uniform sets once a PSO is bound.
+        // TressFX creates bind sets before PSOs in some paths, so defaulting is expected.
         layout->set_index = 0;
     }
 
@@ -537,6 +629,9 @@ EI_Resource* EI_Device::GetDefaultWhiteTexture() {
     RID tex = rd->texture_create(fmt, view);
     if (tex.is_valid()) {
         rd->set_resource_name(tex, "tressfx_default_white");
+
+        // Godot forbids texture_update while a compute/draw list is being recorded.
+        EndAndSubmitCommandBuffer();
 
         PackedByteArray px;
         px.resize(4);
@@ -1030,14 +1125,22 @@ void EI_Device::FlushGPU() {
     if (!rd) {
         return;
     }
-    rd->submit();
-    rd->sync();
+
+    // Conservative bring-up behavior: ensure any queued GPU work is fully finished.
+    // This avoids submit/sync lifecycle errors at the cost of stalling.
+    EndAndSubmitCommandBuffer();
 }
 
 void EI_Device::EndAndSubmitCommandBuffer() {
     RenderingDevice* rd = get_rd();
+    if (!rd) {
+        return;
+    }
     m_currentCommandBuffer.set_rd(rd);
-    m_currentCommandBuffer.EndAndSubmit();
+
+    // EI_CommandContext::EndAndSubmit() already performs submit+sync for local RD.
+    (void)m_currentCommandBuffer.EndAndSubmit();
+    m_local_rd_needs_sync = false;
 }
 
 static uint32_t read_u32_le(const PackedByteArray& bytes) {
@@ -1510,6 +1613,7 @@ void EI_Device::RunMainRDImageSelfTestOnce() {
 
 struct MainRDGuideLinesState {
     godot::RenderingDevice* rd = nullptr;
+    uint64_t rd_instance_id = 0;
 
     // Source + derived counts.
     int vertices_per_strand = 0;
@@ -1555,25 +1659,29 @@ static MainRDGuideLinesState& get_main_rd_guidelines_state() {
 
 static void cleanup_main_rd_guidelines_on_render_thread() {
     MainRDGuideLinesState& st = get_main_rd_guidelines_state();
-    if (!st.rd) {
+    if (g_is_shutting_down) {
+        *g_main_rd_guidelines = MainRDGuideLinesState{};
+        return;
+    }
+    RenderingDevice* rd = get_valid_rd_from_instance_id(st.rd_instance_id);
+    if (!rd) {
         *g_main_rd_guidelines = MainRDGuideLinesState{};
         return;
     }
 
-    godot::RenderingDevice* rd = st.rd;
-    if (st.gfx_set.is_valid()) rd->free_rid(st.gfx_set);
-    if (st.gfx_pipeline.is_valid()) rd->free_rid(st.gfx_pipeline);
+    safe_free_uniform_set(rd, st.gfx_set);
+    safe_free_pipeline(rd, st.gfx_pipeline);
     if (st.gfx_shader.is_valid()) rd->free_rid(st.gfx_shader);
     if (st.vertex_array.is_valid()) rd->free_rid(st.vertex_array);
     if (st.dummy_vtx_buffer.is_valid()) rd->free_rid(st.dummy_vtx_buffer);
-    if (st.framebuffer.is_valid()) rd->free_rid(st.framebuffer);
+    safe_free_framebuffer(rd, st.framebuffer);
     if (st.fb_format != -1) {
         // framebuffer formats are int64 ids; no free call.
         st.fb_format = -1;
     }
-    if (st.color_tex.is_valid()) rd->free_rid(st.color_tex);
-    if (st.compute_set.is_valid()) rd->free_rid(st.compute_set);
-    if (st.compute_pipeline.is_valid()) rd->free_rid(st.compute_pipeline);
+    safe_free_texture(rd, st.color_tex);
+    safe_free_uniform_set(rd, st.compute_set);
+    safe_free_pipeline(rd, st.compute_pipeline);
     if (st.compute_shader.is_valid()) rd->free_rid(st.compute_shader);
     if (st.view_ubo.is_valid()) rd->free_rid(st.view_ubo);
     if (st.line_vertices.is_valid()) rd->free_rid(st.line_vertices);
@@ -1659,6 +1767,7 @@ static void ensure_main_rd_guidelines_resources(RenderingDevice* rd, const Packe
     cleanup_main_rd_guidelines_on_render_thread();
     st = MainRDGuideLinesState{};
     st.rd = rd;
+    st.rd_instance_id = rd ? rd->get_instance_id() : 0;
     st.vertices_per_strand = vps;
     st.guide_strands = guide_strands;
     st.segments = guide_strands * std::max(0, vps - 1);

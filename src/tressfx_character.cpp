@@ -88,30 +88,8 @@ void TressFXCharacter::_process(double delta) {
     m_frame_index++;
     m_time_seconds += delta;
 
-    // GPU guide-lines baseline -> next milestone stepping stone:
-    // Each frame, update skinned guide positions (CPU skinning for now), upload to GPU,
-    // then render to the offscreen guide-lines texture on the render thread.
-    if (m_gpu_mode_active) {
-        if (EI_Device* device = GetDevice()) {
-            if (!m_hairStrands.empty()) {
-                godot::PackedByteArray pos_bytes;
-                int vps = 0;
-                int guides = 0;
-                if (m_hairStrands[0]->PackGuidePositionsVec4(pos_bytes, vps, guides)) {
-                    device->SetGuideLinesSource(pos_bytes, vps, guides);
-                    device->RunMainRDGuideLinesOnce();
-                }
-            }
-        }
-        m_pending_gpu_guidelines_render = false;
-    }
-
     if (m_debug_draw_hair_lines) {
         update_debug_hair_lines();
-    }
-
-    if (!m_pSimulation) {
-        return;
     }
 
     SimulationContext ctx;
@@ -125,9 +103,38 @@ void TressFXCharacter::_process(double delta) {
         ctx.collisionMeshes.push_back(c.get());
     }
 
-    // Until EI_Device and command submission are real, this is a safe no-op.
-    m_pSimulation->StartSimulation(m_time_seconds, ctx, /*bUpdateCollMesh=*/false, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
-    m_pSimulation->WaitOnSimulation();
+    // Simulation (local-RD bring-up): run compute kernels and update GPU positions.
+    if (m_pSimulation) {
+        m_pSimulation->StartSimulation(delta, ctx, /*bUpdateCollMesh=*/false, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
+        m_pSimulation->WaitOnSimulation();
+    }
+
+    // GPU guide-lines:
+    // - If simulation is enabled and a GPU hair object exists, read back simulated guide positions.
+    // - Otherwise, fall back to CPU-skinned guide positions.
+    if (m_gpu_mode_active) {
+        if (EI_Device* device = GetDevice()) {
+            if (!m_hairStrands.empty()) {
+                godot::PackedByteArray pos_bytes;
+                int vps = 0;
+                int guides = 0;
+
+                bool ok = false;
+                if (m_enable_simulation && m_hairStrands[0]->GetTressFXHandle()) {
+                    ok = m_hairStrands[0]->PackSimulatedGuidePositionsVec4(pos_bytes, vps, guides, m_debug_max_guide_strands);
+                }
+                if (!ok) {
+                    ok = m_hairStrands[0]->PackGuidePositionsVec4(pos_bytes, vps, guides);
+                }
+
+                if (ok) {
+                    device->SetGuideLinesSource(pos_bytes, vps, guides);
+                    device->RunMainRDGuideLinesOnce();
+                }
+            }
+        }
+        m_pending_gpu_guidelines_render = false;
+    }
 }
 
 void TressFXCharacter::register_hair_description(const TressFXHairNode::TressFXObjectDescription &desc) {
@@ -494,6 +501,13 @@ void TressFXCharacter::refresh_backend_mode() {
         if (m_enable_simulation) {
             m_pSimulation = std::make_unique<Simulation>();
             m_pSimulation->Initialize();
+
+            // Eagerly create GPU hair objects on the local RD so the first frame can simulate.
+            for (auto& h : m_hairStrands) {
+                if (h) {
+                    h->EnsureTressFXObjectCreated();
+                }
+            }
         }
 
         // Milestone 3-5: minimal GPU guide-line render.
@@ -546,4 +560,16 @@ void TressFXCharacter::update_process_state() {
     // - CPU debug is active (to keep transforms updated), OR
     // - GPU mode is active (to tick simulation / future rendering).
     set_process(m_debug_draw_hair_lines || m_gpu_mode_active);
+}
+
+void TressFXCharacter::_notification(int what) {
+    // Ensure the Texture2DRD wrapper does not hold onto a stale RID during shutdown.
+    // This avoids exit-time invalid RID frees if the underlying main-RD resources
+    // are cleaned up separately.
+    if (what == NOTIFICATION_EXIT_TREE || what == NOTIFICATION_PREDELETE) {
+        if (m_gpu_guide_lines_texture.is_valid()) {
+            m_gpu_guide_lines_texture->set_texture_rd_rid(RID());
+            m_gpu_guide_lines_texture.unref();
+        }
+    }
 }
