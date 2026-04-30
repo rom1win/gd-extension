@@ -31,37 +31,29 @@ static XMMATRIX transform3d_to_xmmatrix(const godot::Transform3D& t) {
 
     XMMATRIX m;
 
-    // Our XMMATRIX + XMVector4Transform implementation assumes row-vector multiplication:
-    //   v' = v * M
-    // with translation stored in the last row (m[3][0..2]).
-    // Godot's Basis columns are the local axes in parent space, so they map to matrix columns.
+    // Convention: row-major XMMATRIX, each Godot basis column placed as a matrix ROW.
+    //
+    // CPU path (TressFXBoneSkinning.cpp): XMVector4Transform(v, M) = v * M
+    //   result.x = v.x*M[0][0] + v.y*M[1][0] + v.z*M[2][0] + 1*M[3][0]
+    //   For this to equal Basis*v+o: M[0][0]=x.x, M[1][0]=y.x, M[2][0]=z.x, M[3][0]=o.x
+    //   → each basis column (x,y,z) goes into a matrix ROW (not a column).
+    //
+    // GPU path (GLSL simulation shaders): mat4 reads same memory as column-major.
+    //   GLSL col0 = memory[0..3] = (x.x,x.y,x.z,0)  [row 0 re-read as col 0]
+    //   (M * vec4(v,1)).x = col0[0]*v.x + col1[0]*v.y + col2[0]*v.z + col3[0]
+    //                     = x.x*v.x + y.x*v.y + z.x*v.z + o.x  ✓
     const godot::Vector3 x = b.get_column(0);
     const godot::Vector3 y = b.get_column(1);
     const godot::Vector3 z = b.get_column(2);
 
-    // Column 0 (X axis)
-    m.m[0][0] = x.x;
-    m.m[1][0] = x.y;
-    m.m[2][0] = x.z;
-    m.m[3][0] = o.x;
-
-    // Column 1 (Y axis)
-    m.m[0][1] = y.x;
-    m.m[1][1] = y.y;
-    m.m[2][1] = y.z;
-    m.m[3][1] = o.y;
-
-    // Column 2 (Z axis)
-    m.m[0][2] = z.x;
-    m.m[1][2] = z.y;
-    m.m[2][2] = z.z;
-    m.m[3][2] = o.z;
-
-    // Column 3
-    m.m[0][3] = 0.0f;
-    m.m[1][3] = 0.0f;
-    m.m[2][3] = 0.0f;
-    m.m[3][3] = 1.0f;
+    // Row 0: x-basis column as matrix row
+    m.m[0][0] = x.x; m.m[0][1] = x.y; m.m[0][2] = x.z; m.m[0][3] = 0.0f;
+    // Row 1: y-basis column as matrix row
+    m.m[1][0] = y.x; m.m[1][1] = y.y; m.m[1][2] = y.z; m.m[1][3] = 0.0f;
+    // Row 2: z-basis column as matrix row
+    m.m[2][0] = z.x; m.m[2][1] = z.y; m.m[2][2] = z.z; m.m[2][3] = 0.0f;
+    // Row 3: origin (translation)
+    m.m[3][0] = o.x; m.m[3][1] = o.y; m.m[3][2] = o.z; m.m[3][3] = 1.0f;
 
     return m;
 }

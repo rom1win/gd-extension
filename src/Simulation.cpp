@@ -95,13 +95,36 @@ void Simulation::StartSimulation(
     const float dt = (float)fTime;
     const float timeStep = (dt > 0.0f) ? std::min(std::max(dt, 1.0f / 240.0f), 1.0f / 15.0f) : (1.0f / 60.0f);
 
-    // Simple default simulation settings for bring-up: add some gravity/wind so motion is visible.
-    TressFXSimulationSettings settings;
-    settings.m_gravityMagnitude = 1.5f;
-    settings.m_windMagnitude = 0.8f;
-    settings.m_windDirection[0] = 1.0f;
-    settings.m_windDirection[1] = 0.0f;
-    settings.m_windDirection[2] = 0.0f;
+    // Simulation settings tuned to the original RatBoy sample values (TressFXSample.cpp).
+    // The critical ones are globalConstraintStiffness/Range: without them the global shape
+    // constraint block in the integration shader never fires and hair floats free of the skeleton.
+    TressFXSimulationSettings settings{};
+    settings.m_vspCoeff                   = ctx.vspCoeff;
+    settings.m_vspAccelThreshold          = ctx.vspAccelThreshold;
+    settings.m_localConstraintStiffness   = ctx.localConstraintStiffness;
+    settings.m_localConstraintsIterations = ctx.localConstraintsIterations;
+    settings.m_globalConstraintStiffness  = ctx.globalConstraintStiffness;
+    settings.m_globalConstraintsRange     = ctx.globalConstraintsRange;
+    settings.m_lengthConstraintsIterations= ctx.lengthConstraintsIterations;
+    settings.m_damping                    = ctx.damping;
+    settings.m_gravityMagnitude           = ctx.gravityMagnitude;
+    {
+        const godot::Vector3 w = ctx.wind_velocity;
+        const float mag = (float)w.length();
+        settings.m_windMagnitude = mag;
+
+        if (mag > 0.0001f) {
+            const godot::Vector3 dir = w / mag;
+            settings.m_windDirection[0] = (float)dir.x;
+            settings.m_windDirection[1] = (float)dir.y;
+            settings.m_windDirection[2] = (float)dir.z;
+        } else {
+            // Direction is unused when magnitude is zero, but keep it deterministic.
+            settings.m_windDirection[0] = 1.0f;
+            settings.m_windDirection[1] = 0.0f;
+            settings.m_windDirection[2] = 0.0f;
+        }
+    }
 
     // Update per-object inputs.
     // NOTE: bones are written into the mapped sim constant buffer then uploaded by UpdateConstantBuffer
