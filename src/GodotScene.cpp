@@ -103,21 +103,3 @@ std::vector<XMMATRIX>& EI_Scene::GetWorldSpaceSkeletonMats(int /*skinNumber*/) {
     m_cached_skeleton_version = version;
     return m_cached_world_mats;
 }
-
-static AMD::float4x4 identity_4x4() {
-    AMD::float4x4 identity;
-    std::memset(&identity, 0, sizeof(identity));
-    identity.m[0] = 1.0f;
-    identity.m[5] = 1.0f;
-    identity.m[10] = 1.0f;
-    identity.m[15] = 1.0f;
-    return identity;
-}
-
-AMD::float4x4 EI_Scene::GetMV() {
-    return identity_4x4();
-}
-
-AMD::float4x4 EI_Scene::GetMVP() {
-    return identity_4x4();
-}

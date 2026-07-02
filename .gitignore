@@ -35,3 +35,6 @@
 #python
 
 .venv
+
+# AMD TressFX reference sources: consulted read-only, never committed or shipped.
+TressFX/

@@ -18,10 +18,21 @@ env = SConscript("godot-cpp/SConstruct")
 env.Append(CPPPATH=["src/", "TressFX/src/", "TressFX/src/TressFX/", "TressFX/src/Math/"])
 env.Append(CPPDEFINES=["TRESSFX_GODOT"])
 sources = Glob("src/*.cpp")
-sources += Glob("TressFX/src/TressFX/*.cpp")
-sources += Glob("TressFX/src/Math/*.cpp")
-# Exclude sample wrappers that depend on Cauldron/DirectX
-# sources += ["TressFX/src/Simulation.cpp", "TressFX/src/HairStrands.cpp", "TressFX/src/SDF.cpp"]
+# TressFX reference sources: explicit keep list only (no wildcards, so unused
+# render/SDF paths cannot creep back into the build). See CLAUDE.md — this
+# entire list goes away once the GDScript host (Phase 2) replaces the C++ layer.
+sources += [
+    "TressFX/src/TressFX/TressFXAsset.cpp",
+    "TressFX/src/TressFX/TressFXSimulation.cpp",
+    "TressFX/src/TressFX/TressFXHairObject.cpp",
+    "TressFX/src/TressFX/TressFXLayouts.cpp",
+    "TressFX/src/TressFX/AMD_TressFX.cpp",
+    "TressFX/src/Math/Vector3D.cpp",
+    "TressFX/src/Math/Matrix33.cpp",
+    "TressFX/src/Math/Matrix44.cpp",
+    "TressFX/src/Math/Quaternion.cpp",
+    "TressFX/src/Math/Transform.cpp",
+]
 
 def _sanitize_build_id(s: str) -> str:
     s = (s or "").strip()

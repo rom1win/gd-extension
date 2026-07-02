@@ -777,8 +777,6 @@ void TressFXCharacter::refresh_backend_mode() {
         // Editor safety: never initialize GPU/RenderingDevice.
         m_gpu_mode_active = false;
         m_gpu_runtime_initialized = false;
-        m_pPPLL.reset();
-        m_pShortCut.reset();
         m_pSimulation.reset();
         clear_gpu_debug_hair_lines_3d();
         m_last_guide_positions_valid = false;
@@ -790,8 +788,6 @@ void TressFXCharacter::refresh_backend_mode() {
         // Debug/CPU mode: show CPU guide lines and keep GPU objects off.
         m_gpu_mode_active = false;
         m_gpu_runtime_initialized = false;
-        m_pPPLL.reset();
-        m_pShortCut.reset();
         m_pSimulation.reset();
         clear_gpu_debug_hair_lines_3d();
         m_last_guide_positions_valid = false;
@@ -801,8 +797,6 @@ void TressFXCharacter::refresh_backend_mode() {
         // Initialize Simulation and run the current GPU milestone (simulation + in-world guide-line debug).
         // If shaders are missing, PSO creation will warn once per kernel and Simulation will remain inert.
         m_gpu_mode_active = true;
-        m_pPPLL.reset();
-        m_pShortCut.reset();
         m_pSimulation.reset();
         m_last_guide_positions_valid = false;
 

@@ -12,8 +12,6 @@
 #include "Simulation.h"
 #include "HairStrands.h"
 #include "SDF.h"
-#include "TressFX/TressFXPPLL.h"
-#include "TressFX/TressFXShortCut.h"
 
 using namespace godot;
 
@@ -90,8 +88,6 @@ private:
     std::vector<std::unique_ptr<EI_Scene>> m_adapterScenes;
 
     std::unique_ptr<Simulation> m_pSimulation;
-    std::unique_ptr<TressFXPPLL> m_pPPLL;
-    std::unique_ptr<TressFXShortCut> m_pShortCut;
 
     // Debug toggle:
     // - enabled: show CPU guide-line visualization (rigid bone-follow, no skinning)

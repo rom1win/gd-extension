@@ -6,7 +6,7 @@
 #include <string>
 
 // Replacement for SceneGLTFImpl.h / EI_Scene
-// Implements the interface required by TressFXBoneSkinning and TressFXSDFMarchingCubes
+// Provides bone lookup/matrices for TressFXAsset::LoadBoneData and our skinning paths.
 
 namespace godot {
 class Skeleton3D;
@@ -20,13 +20,10 @@ public:
     void set_skeleton(godot::Skeleton3D* skeleton);
     godot::Skeleton3D* get_skeleton() const { return m_skeleton; }
 
-    // Required by TressFXBoneSkinning.cpp
+    // Required by TressFXAsset::LoadBoneData.
     int GetBoneIdByName(int skinNumber, const char* name);
+    // Used by our CPU/GPU skinning paths (HairStrands).
     std::vector<XMMATRIX>& GetWorldSpaceSkeletonMats(int skinNumber);
-
-    // Used by TressFXBoneSkinning for debug shading.
-    AMD::float4x4 GetMV();
-    AMD::float4x4 GetMVP();
 
 private:
     godot::Skeleton3D* m_skeleton = nullptr;
