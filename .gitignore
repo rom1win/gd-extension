@@ -44,3 +44,6 @@ TressFX/
 .sconsign.dblite
 graphify-out/
 .claude/settings.local.json
+
+# Linker export files (build artifacts)
+*.exp
