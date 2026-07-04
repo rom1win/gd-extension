@@ -38,7 +38,9 @@
 
 # AMD TressFX reference sources: consulted read-only, never committed or shipped.
 # (The needed subset is vendored in thirdparty/tressfx/ — this folder is obsolete.)
-TressFX/
+# Anchored to the repo root: must NOT match demo/addons/tressfx/ (git ignore
+# matching is case-insensitive on Windows).
+/TressFX/
 
 # Generated / local-only
 .sconsign.dblite
@@ -47,3 +49,6 @@ graphify-out/
 
 # Linker export files (build artifacts)
 *.exp
+
+# Gate check outputs
+demo/gate1_*.txt
