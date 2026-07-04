@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://jwcy1ktkeyah"
+path="res://.godot/imported/TressFXSimulation.VelocityShockPropagation.comp.glsl-e3789c76db89c95ca2160029bee2c23c.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSimulation.VelocityShockPropagation.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSimulation.VelocityShockPropagation.comp.glsl-e3789c76db89c95ca2160029bee2c23c.res"]
+
+[params]
+

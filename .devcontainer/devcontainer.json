@@ -1,0 +1,26 @@
+{
+  "name": "Godot C++ & Claude Code Environment",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "geequlim.godot-tools",
+        "saoudrizwan.claude-dev",
+        "usernamehw.errorlens",
+        "christian-kohler.path-intellisense"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "ms-vscode.cpptools"
+      }
+    }
+  },
+  "containerEnv": {
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
+  },
+  "remoteUser": "vscode"
+}

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://y48dvmefkj5c"
+path="res://.godot/imported/tressfx_smoke_test.frag.glsl-f58ea8375fe542f55af37d1e7497175f.res"
+
+[deps]
+
+source_file="res://shaders/glsl/tressfx_smoke_test.frag.glsl"
+dest_files=["res://.godot/imported/tressfx_smoke_test.frag.glsl-f58ea8375fe542f55af37d1e7497175f.res"]
+
+[params]
+

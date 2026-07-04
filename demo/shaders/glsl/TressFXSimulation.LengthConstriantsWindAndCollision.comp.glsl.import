@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dev1cfnlu7bdp"
+path="res://.godot/imported/TressFXSimulation.LengthConstriantsWindAndCollision.comp.glsl-ab65f49e25201160821f362a4af84282.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSimulation.LengthConstriantsWindAndCollision.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSimulation.LengthConstriantsWindAndCollision.comp.glsl-ab65f49e25201160821f362a4af84282.res"]
+
+[params]
+

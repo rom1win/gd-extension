@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://qlyv2i3mf1q8"
+path="res://.godot/imported/TressFXSimulation.LocalShapeConstraints.comp.glsl-dbcf4f71f2ebd01492462940d193869a.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSimulation.LocalShapeConstraints.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSimulation.LocalShapeConstraints.comp.glsl-dbcf4f71f2ebd01492462940d193869a.res"]
+
+[params]
+

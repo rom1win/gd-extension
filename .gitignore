@@ -37,4 +37,10 @@
 .venv
 
 # AMD TressFX reference sources: consulted read-only, never committed or shipped.
+# (The needed subset is vendored in thirdparty/tressfx/ — this folder is obsolete.)
 TressFX/
+
+# Generated / local-only
+.sconsign.dblite
+graphify-out/
+.claude/settings.local.json

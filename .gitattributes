@@ -1,0 +1,6 @@
+# Hair/mesh asset formats: never normalize line endings or diff as text.
+*.tfx binary
+*.tfxbone binary
+*.tfxmesh binary
+*.bin binary
+*.glb binary

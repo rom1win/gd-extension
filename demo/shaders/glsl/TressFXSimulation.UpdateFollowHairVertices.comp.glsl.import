@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c03cq12m4wfkf"
+path="res://.godot/imported/TressFXSimulation.UpdateFollowHairVertices.comp.glsl-c254b3860ae1e889c61949aef1ab6ba4.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSimulation.UpdateFollowHairVertices.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSimulation.UpdateFollowHairVertices.comp.glsl-c254b3860ae1e889c61949aef1ab6ba4.res"]
+
+[params]
+

@@ -1,7 +1,7 @@
 [gd_scene load_steps=4 format=3 uid="uid://c7ham3abkuxe2"]
 
 [ext_resource type="PackedScene" uid="uid://jaaxkayekveb" path="res://babylon.tscn" id="1_ig7tw"]
-[ext_resource type="Script" path="res://guidelines_viewer.gd" id="2_guides"]
+[ext_resource type="Script" uid="uid://dfdcewm1ht8fi" path="res://guidelines_viewer.gd" id="2_guides"]
 
 [sub_resource type="Environment" id="Environment_ig7tw"]
 ambient_light_source = 2
@@ -11,7 +11,7 @@ ambient_light_source = 2
 [node name="babylon" parent="." instance=ExtResource("1_ig7tw")]
 
 [node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(0.00321145, 0, 0.999995, 0, 1, 0, -0.999995, 0, 0.00321145, 1.59175, 0.483425, 0.282357)
+transform = Transform3D(0.878709, 0, 0.477358, 0, 1, 0, -0.477358, 0, 0.878709, 0.380628, 0.483425, 1.14123)
 current = true
 fov = 51.2
 
@@ -20,11 +20,10 @@ environment = SubResource("Environment_ig7tw")
 
 [node name="GuideLinesViewer" type="CanvasLayer" parent="."]
 script = ExtResource("2_guides")
-character_path = NodePath("../babylon/TressFXCharacter")
+character_path = NodePath("../babylon/RatboyNode/CharacterBody3D/TressFXCharacter")
+show_overlay = true
 
 [node name="TextureRect" type="TextureRect" parent="GuideLinesViewer"]
-anchor_right = 0.0
-anchor_bottom = 0.0
 offset_left = 8.0
 offset_top = 8.0
 offset_right = 520.0

@@ -15,23 +15,25 @@ env = SConscript("godot-cpp/SConstruct")
 # - LINKFLAGS are for linking flags
 
 # tweak this if you want to use different folders, or more folders, to store your source code in.
-env.Append(CPPPATH=["src/", "TressFX/src/", "TressFX/src/TressFX/", "TressFX/src/Math/"])
+env.Append(CPPPATH=["src/", "thirdparty/tressfx/src/", "thirdparty/tressfx/src/TressFX/", "thirdparty/tressfx/src/Math/"])
 env.Append(CPPDEFINES=["TRESSFX_GODOT"])
 sources = Glob("src/*.cpp")
-# TressFX reference sources: explicit keep list only (no wildcards, so unused
-# render/SDF paths cannot creep back into the build). See CLAUDE.md — this
-# entire list goes away once the GDScript host (Phase 2) replaces the C++ layer.
+# TressFX reference sources, vendored under thirdparty/tressfx (see its README):
+# explicit keep list only (no wildcards, so unused render/SDF paths cannot creep
+# back into the build). The untracked TressFX/ checkout is no longer needed to
+# build. This entire list goes away once the GDScript host (Phase 2) replaces
+# the C++ layer.
 sources += [
-    "TressFX/src/TressFX/TressFXAsset.cpp",
-    "TressFX/src/TressFX/TressFXSimulation.cpp",
-    "TressFX/src/TressFX/TressFXHairObject.cpp",
-    "TressFX/src/TressFX/TressFXLayouts.cpp",
-    "TressFX/src/TressFX/AMD_TressFX.cpp",
-    "TressFX/src/Math/Vector3D.cpp",
-    "TressFX/src/Math/Matrix33.cpp",
-    "TressFX/src/Math/Matrix44.cpp",
-    "TressFX/src/Math/Quaternion.cpp",
-    "TressFX/src/Math/Transform.cpp",
+    "thirdparty/tressfx/src/TressFX/TressFXAsset.cpp",
+    "thirdparty/tressfx/src/TressFX/TressFXSimulation.cpp",
+    "thirdparty/tressfx/src/TressFX/TressFXHairObject.cpp",
+    "thirdparty/tressfx/src/TressFX/TressFXLayouts.cpp",
+    "thirdparty/tressfx/src/TressFX/AMD_TressFX.cpp",
+    "thirdparty/tressfx/src/Math/Vector3D.cpp",
+    "thirdparty/tressfx/src/Math/Matrix33.cpp",
+    "thirdparty/tressfx/src/Math/Matrix44.cpp",
+    "thirdparty/tressfx/src/Math/Quaternion.cpp",
+    "thirdparty/tressfx/src/Math/Transform.cpp",
 ]
 
 def _sanitize_build_id(s: str) -> str:

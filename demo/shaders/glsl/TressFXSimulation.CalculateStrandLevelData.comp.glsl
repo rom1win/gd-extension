@@ -130,9 +130,47 @@ void CalcIndicesInStrandLevelMaster(
     globalRootVertexIndex = globalStrandIndex * numVerticesInTheStrand;
 }
 
-vec3 ApplyVertexBoneSkinning(vec3 vertexPos, BoneSkinningData skinningData, out vec4 bone_quat) {
-    bone_quat = vec4(0.0, 0.0, 0.0, 1.0);
+// Extract rotation quaternion from a blended bone matrix.
+// The CPU stores bone matrices as XMMATRIX (row-major) which GLSL reads as column-major mat4.
+// With this reading, M_glsl[col][row] = M_cpu_row_col, so M_glsl * v_col produces the same
+// geometric transform as HLSL mul(v_row, M_hlsl_row_major). The 3x3 rotation trace and
+// off-diagonal elements are in M_glsl[0..2][0..2], matching the column-major convention.
+vec4 MatToQuat(mat4 m) {
+    float trace = m[0][0] + m[1][1] + m[2][2];
+    vec4 q;
+    if (trace > 0.0) {
+        float r = sqrt(trace + 1.0);
+        q.w = 0.5 * r;
+        r = 0.5 / r;
+        q.x = (m[1][2] - m[2][1]) * r;
+        q.y = (m[2][0] - m[0][2]) * r;
+        q.z = (m[0][1] - m[1][0]) * r;
+    } else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+        float r = sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]);
+        float s = 0.5 / r;
+        q.x = 0.5 * r;
+        q.y = (m[1][0] + m[0][1]) * s;
+        q.z = (m[0][2] + m[2][0]) * s;
+        q.w = (m[1][2] - m[2][1]) * s;
+    } else if (m[1][1] > m[2][2]) {
+        float r = sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]);
+        float s = 0.5 / r;
+        q.x = (m[1][0] + m[0][1]) * s;
+        q.y = 0.5 * r;
+        q.z = (m[2][1] + m[1][2]) * s;
+        q.w = (m[2][0] - m[0][2]) * s;
+    } else {
+        float r = sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]);
+        float s = 0.5 / r;
+        q.x = (m[0][2] + m[2][0]) * s;
+        q.y = (m[2][1] + m[1][2]) * s;
+        q.z = 0.5 * r;
+        q.w = (m[0][1] - m[1][0]) * s;
+    }
+    return normalize_quat(q);
+}
 
+vec3 ApplyVertexBoneSkinning(vec3 vertexPos, BoneSkinningData skinningData, out vec4 bone_quat) {
     int idx0 = int(skinningData.boneIndex.x);
     int idx1 = int(skinningData.boneIndex.y);
     int idx2 = int(skinningData.boneIndex.z);
@@ -153,6 +191,9 @@ vec3 ApplyVertexBoneSkinning(vec3 vertexPos, BoneSkinningData skinningData, out 
     if (weight_sum > 1e-6) {
         bone_matrix /= weight_sum;
     }
+
+    // Extract rotation quaternion for LocalShapeConstraints tracking.
+    bone_quat = MatToQuat(bone_matrix);
 
     return (bone_matrix * vec4(vertexPos, 1.0)).xyz;
 }

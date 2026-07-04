@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dvh0m8yn7cjup"
+path="res://.godot/imported/TressFXSimulation.CalculateStrandLevelData.comp.glsl-d8aa4be25cf0a87a3f54eeee332dd801.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSimulation.CalculateStrandLevelData.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSimulation.CalculateStrandLevelData.comp.glsl-d8aa4be25cf0a87a3f54eeee332dd801.res"]
+
+[params]
+
