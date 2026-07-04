@@ -219,6 +219,51 @@ HairStrands::HairStrands(
                 godot::String(" vps=") + godot::String::num_int64(m_asset->m_numVerticesPerStrand) +
                 godot::String(" guides=") + godot::String::num_int64(m_asset->m_numGuideStrands) +
                 godot::String(" followPerGuide=") + godot::String::num_int64(m_asset->m_numFollowStrandsPerGuide));
+
+            // GATE1 TEMP: dump sampled asset values for comparison with the GDScript
+            // parser (demo/tests/gate1_dump.gd + tools/compare_gate1.py).
+            // Agreed temporary debug output for Gates 0-2; remove after Gate 1 is green.
+            {
+                const int vps = (int)m_asset->m_numVerticesPerStrand;
+                const int ts = (int)m_asset->m_numTotalStrands;
+                char buf[192];
+                std::string out;
+
+                std::snprintf(buf, sizeof(buf), "counts guides=%d vps=%d follow=%d total_strands=%d total_vertices=%d\n",
+                    (int)m_asset->m_numGuideStrands, vps, (int)m_asset->m_numFollowStrandsPerGuide,
+                    ts, (int)m_asset->m_numTotalVertices);
+                out += buf;
+
+                const int pos_samples[10][2] = {
+                    {0, 0}, {0, 1}, {0, 2}, {0, vps - 1},
+                    {1, 0}, {1, vps - 1}, {2, 0}, {200, vps / 2},
+                    {ts - 2, 0}, {ts - 1, vps - 1},
+                };
+                for (const auto& sv : pos_samples) {
+                    const auto& p = m_asset->m_positions[sv[0] * vps + sv[1]];
+                    std::snprintf(buf, sizeof(buf), "pos s=%d v=%d %.6f %.6f %.6f %.6f\n", sv[0], sv[1], p.x, p.y, p.z, p.w);
+                    out += buf;
+                }
+
+                const int rest_samples[4][2] = { {0, 0}, {0, vps - 2}, {0, vps - 1}, {200, vps / 2} };
+                for (const auto& sv : rest_samples) {
+                    std::snprintf(buf, sizeof(buf), "rest s=%d v=%d %.6f\n", sv[0], sv[1], m_asset->m_restLengths[sv[0] * vps + sv[1]]);
+                    out += buf;
+                }
+
+                for (int s = 0; s < 4; ++s) {
+                    const auto& o = m_asset->m_followRootOffsets[s];
+                    std::snprintf(buf, sizeof(buf), "offset s=%d %.6f %.6f %.6f %.6f\n", s, o.x, o.y, o.z, o.w);
+                    out += buf;
+                }
+
+                godot::Ref<godot::FileAccess> gf = godot::FileAccess::open("res://gate1_cpp.txt", godot::FileAccess::WRITE);
+                if (gf.is_valid()) {
+                    gf->store_string(godot::String(out.c_str()));
+                    gf->close();
+                    godot::UtilityFunctions::print("HairStrands: GATE1 dump written to res://gate1_cpp.txt");
+                }
+            }
 }
 
 bool HairStrands::EnsureTressFXObjectCreated() {
