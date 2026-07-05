@@ -52,3 +52,7 @@ graphify-out/
 
 # Gate check outputs
 demo/gate1_*.txt
+demo/gate2_*.bin
+
+# Freshly captured dumps (candidates; the adopted baseline lives in reference/)
+reference_new/

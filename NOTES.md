@@ -201,3 +201,26 @@ UpdateSimulationParameters (fills UBO CPU-side)}, then `Simulate` (UBO upload + 
 dispatches per §4), then transition barriers → local-RD submit+sync → CPU readback of
 guide positions → rebuild in-world debug line mesh. The rewrite keeps this shape but
 moves steps onto the main RD render thread and drops the readback (debug-only, async).
+
+## 9. Gate 2 findings — residual stretch is real TressFX behavior
+
+Measured at Gate 2 (RatBoy mohawk, wind off, identity bones, settled state):
+the iterative length corrector leaves a permanent residual stretch that scales
+with dt² and concentrates on short segments. C++ reference at dt≈1/144:
+median 0.006%, p99 4.1%, max 28%. GDScript at the same per-frame dt:
+median 0.002%, p99 1.8%, max 12% — i.e. the rewrite is slightly TIGHTER.
+At dt=1/60 both are proportionally looser (GDScript max ~148% on a 0.11 mm
+segment ≈ 0.15 mm absolute — invisible).
+
+Consequences:
+- The brief's "<1% per segment" invariant is satisfiable only as a MEDIAN,
+  not a max; the authoritative Gate 2 equivalence check is
+  tools/compare_gate2.py (GDScript must not be looser than the C++ reference
+  at the same dt).
+- The asset contains degenerate micro-segments (rest length down to 2e-6 m);
+  relative error is meaningless there, absolute bounds apply.
+- Physics is frame-rate dependent by design (dt per rendered frame, H8);
+  the cinematic path (Phase 8) must use fixed dt.
+- Regression protection: reference dumps at fixed dt=1/60 frames 1/30/120 in
+  reference/ + tools/compare_dump.py (capture via gdscript_hair.tscn with
+  capture_reference=true -> reference_new/).

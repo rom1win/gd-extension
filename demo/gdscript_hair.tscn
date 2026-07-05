@@ -1,0 +1,24 @@
+[gd_scene load_steps=3 format=3 uid="uid://c3j8tnhbhy2u6"]
+
+[ext_resource type="Script" uid="uid://gxk3qchvd2sb" path="res://addons/tressfx/hair_sim_node.gd" id="1_hairsim"]
+
+[sub_resource type="Environment" id="Environment_gd"]
+ambient_light_source = 2
+
+[node name="GDScriptHair" type="Node3D"]
+
+[node name="HairSim" type="Node3D" parent="."]
+script = ExtResource("1_hairsim")
+fixed_timestep = false
+capture_reference = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(0.878709, 0, 0.477358, 0, 1, 0, -0.477358, 0, 0.878709, 0.380628, 0.483425, 1.14123)
+current = true
+fov = 51.2
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707107, -0.5, 0.5, 0, 0.707107, 0.707107, -0.707107, -0.5, 0.5, 0, 2, 0)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_gd")
