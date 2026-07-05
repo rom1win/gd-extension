@@ -10,6 +10,7 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include "tressfx_collision_node.h"
 #include "EngineInterface.h"
 #include "Simulation.h"
@@ -208,6 +209,25 @@ void TressFXCharacter::_process(double delta) {
                     update_gpu_debug_hair_lines_3d_mesh(pos_bytes, vps, guides);
                 } else {
                     m_last_guide_positions_valid = false;
+                }
+            }
+
+            // GATE2 TEMP: one-shot dump of ALL simulated guide positions at frame 300
+            // for tools/compare_gate2.py (C++ vs GDScript residual-stretch comparison).
+            // Agreed Gates 0-2 debug; removed with the C++ layer after Gate 2.
+            if (m_frame_index == 300 && !m_hairStrands.empty() && m_hairStrands[0]->GetTressFXHandle()) {
+                godot::PackedByteArray full_bytes;
+                int full_vps = 0;
+                int full_guides = 0;
+                if (m_hairStrands[0]->PackSimulatedGuidePositionsVec4(full_bytes, full_vps, full_guides, 0)) {
+                    godot::Ref<godot::FileAccess> gf = godot::FileAccess::open("res://gate2_cpp.bin", godot::FileAccess::WRITE);
+                    if (gf.is_valid()) {
+                        gf->store_32((uint32_t)full_vps);
+                        gf->store_32((uint32_t)full_guides);
+                        gf->store_buffer(full_bytes);
+                        gf->close();
+                        UtilityFunctions::print("TressFXCharacter: GATE2 dump written to res://gate2_cpp.bin (vps=", full_vps, " guides=", full_guides, ")");
+                    }
                 }
             }
 
