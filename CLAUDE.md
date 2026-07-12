@@ -94,6 +94,21 @@ heart; the C++ extension around them is the product.
   `tools/compare_dump.py` run (or an approved re-baseline).
 - Commit only verified-working states. Smallest possible diffs.
 
+## Working procedure (follow this loop for every task, no exceptions)
+
+1. One milestone = one git branch (e.g. `a2-visible-hair`). Create it from `main`.
+2. Do ONE subtask at a time, smallest diff that completes it.
+3. After any C++ change: `scons -Q` from the repo root. It must end with
+   "Linking Shared Library". If it fails, fix the build before anything else.
+4. You cannot run Godot. To test, tell the maintainer exactly: what to click/press,
+   what they should see if it works, what they should see if it broke.
+5. When the subtask's check passes, commit (small message, no Co-Authored-By),
+   then start the next subtask.
+6. Physics-affecting change (kernels, buffers, UBO, dt, parameters, asset cooking)?
+   Run the regression gate below before committing.
+7. Stuck, or something contradicts this brief? Stop and ask. Do not improvise
+   around a failing check, and never stack a second fix on an unverified first one.
+
 ## How to run the regression gate (memorize this; it recurs at every milestone)
 
 1. In `demo/babylon.tscn`, set `gate_capture_mode = true` on the TressFXCharacter node.
@@ -115,20 +130,39 @@ heart; the C++ extension around them is the product.
   `Texture2DRD` (the same mechanism the debug overlay already uses — see
   `m_gpu_guide_lines_texture` in `src/tressfx_character.cpp`). NO CPU readback on the
   render path. Subtasks, in order, each with its check:
+  Two DIFFERENT shader languages are involved — do not mix them up:
+  (a) RenderingDevice compute GLSL (`.comp.glsl`, like the kernels) for the A2.1 copy
+  pass; (b) Godot's own shading language (`.gdshader`, `shader_type spatial;`) for the
+  A2.2/A2.3 ribbon material. `Texture2DRD` is the bridge between the two worlds.
   - **A2.1 — position texture.** After the sim dispatches in `_rt_sim_tick`, run a
-    small compute pass (new GLSL file in `demo/shaders/glsl/`, NOT a kernel change)
-    copying all 143360 float4 positions into an RGBA32F texture (e.g. 512x512 fits
-    143360 texels at 1 texel per vertex, row-major by global vertex index). Expose it
-    on TressFXCharacter as a `Texture2DRD` property. Check: maintainer presses F5 with
-    a debug TextureRect showing the texture — colorful noise that changes per frame.
-  - **A2.2 — ribbon mesh + vertex shader.** Build one static ArrayMesh: per strand,
-    (vps-1) segments x 2 triangles; vertices carry only (strand_index, vertex_index,
-    side) packed in UV/CUSTOM attributes. A Godot ShaderMaterial vertex shader fetches
-    this vertex's and the next vertex's positions from the A2.1 texture, computes the
-    strand tangent, and offsets the vertex sideways (camera-facing) by hair radius
-    (`fiberRadius` ~0.0021 in TressFX units; expose as a node property). Reference for
-    the expansion math: vendored `TressFXStrands.hlsl` (GetExpandedTressFXVert). Check:
-    F5 shows the mohawk as solid geometry following the sim, from every camera angle.
+    small compute pass (new `.comp.glsl` file in `demo/shaders/glsl/`, NOT a kernel
+    change) copying all 143360 float4 positions into an RGBA32F texture. 512x512 =
+    262144 texels is enough at 1 texel per vertex; vertex v lives at texel
+    `(v % 512, v / 512)`. To create the texture and compile/dispatch the pass on the
+    main RD, copy the existing debug-overlay pattern (search "GuideLines" in
+    `src/GodotEngineInterfaceImpl.cpp` — it already creates a main-RD texture, wraps
+    it in `Texture2DRD`, and dispatches a compute pass on the render thread). Expose
+    the texture on TressFXCharacter as a `Texture2DRD` property. Check: maintainer
+    presses F5 with a debug TextureRect showing the texture — a colorful pattern that
+    changes as the hair moves.
+  - **A2.2 — ribbon mesh + vertex shader.** Build one static ArrayMesh: for each of
+    the 4480 strands, (vps-1)=31 segments x 2 triangles; vertices carry only
+    (global_vertex_index, side = -1 or +1) packed into `ARRAY_TEX_UV` (no real
+    positions — the vertex shader creates them). The `.gdshader` (spatial) vertex
+    shader does `texelFetch(position_tex, ivec2(v % 512, v / 512), 0)` for this
+    vertex and the next one on the strand, computes the tangent, and offsets the
+    vertex sideways perpendicular to the camera by the hair radius (`fiber_radius`,
+    default 0.0021, expose as a node property). Expansion-math reference: vendored
+    `TressFXStrands.hlsl` (GetExpandedTressFXVert). TWO PITFALLS, both mandatory:
+    (1) the ArrayMesh has garbage local positions, so Godot will frustum-cull it —
+    call `MeshInstance3D::set_custom_aabb` with a generous box, e.g. AABB((-2,-2,-2),
+    (4,4,4)) around the character (the old debug-lines mesh never needed this because
+    it carried real CPU positions; the ribbon mesh does not); (2) attach the
+    MeshInstance3D with the same parent/transform as
+    the existing GPU debug-lines mesh (see `refresh_gpu_debug_hair_lines_3d` in
+    `src/tressfx_character.cpp`) so sim-space positions land in the right place in
+    the world. Check: F5 shows the mohawk as solid ribbon geometry following the sim,
+    from every camera angle, no popping when orbiting the camera.
   - **A2.3 — shading.** Fragment shader: base/tip color properties, Kajiya-Kay-style
     anisotropic highlight (reference: vendored `TressFXLighting.hlsl`), alpha-to-
     coverage for soft edges (`ALPHA_SCISSOR`/`ALPHA_ANTIALIASING_EDGE` in Godot),
