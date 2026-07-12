@@ -95,6 +95,8 @@ void InitializeGodotEngineInterface() {
     }
     g_is_shutting_down = false;
     g_device_singleton = memnew(EI_Device);
+    // A1: the simulation runs on the main RenderingDevice from now on.
+    g_device_singleton->SetUseMainRD(true);
 }
 
 void ShutdownGodotEngineInterface() {
@@ -167,6 +169,14 @@ EI_Device::EI_Device() {
 EI_Device::~EI_Device() = default;
 
 RenderingDevice* EI_Device::get_rd() {
+    // A1 (main-RD migration): simulation resources and dispatches live on the MAIN
+    // RenderingDevice. GPU work must happen on the render thread (TressFXCharacter
+    // schedules it via RenderingServer::call_on_render_thread); never submit()/sync().
+    if (m_use_main_rd) {
+        RenderingServer* rs = RenderingServer::get_singleton();
+        return rs ? rs->get_rendering_device() : nullptr;
+    }
+
     if (m_local_rd) {
         return m_local_rd;
     }
@@ -181,6 +191,12 @@ RenderingDevice* EI_Device::get_rd() {
     // we use a local RenderingDevice.
     m_local_rd = rs->create_local_rendering_device();
     return m_local_rd;
+}
+
+void EI_CommandContext::set_rd(RenderingDevice* p_rd) {
+    rd = p_rd;
+    RenderingServer* rs = RenderingServer::get_singleton();
+    is_main_rd = (rd != nullptr && rs != nullptr && rd == rs->get_rendering_device());
 }
 
 void EI_CommandContext::BeginComputeIfNeeded() {
@@ -204,6 +220,12 @@ bool EI_CommandContext::EndAndSubmit() {
         compute_list = -1;
         bound_pso = nullptr;
         has_queued_lists = true;
+    }
+
+    // MAIN RenderingDevice: the engine owns the frame — never submit()/sync().
+    if (is_main_rd) {
+        has_queued_lists = false;
+        return false;
     }
 
     // Submit any queued command lists (including ones ended early by UpdateBuffer/Clear*).

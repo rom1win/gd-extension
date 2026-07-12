@@ -63,12 +63,12 @@ void Simulation::StartSimulation(
         return;
     }
 
+    // A1: this returns the MAIN RenderingDevice; we are on the render thread.
     godot::RenderingDevice* rd = device->GetLocalRenderingDevice();
     if (!rd) {
         return;
     }
 
-    // Ensure the command context targets the local RD.
     EI_CommandContext& commandContext = device->GetCurrentCommandContext();
     commandContext.set_rd(rd);
 
@@ -108,6 +108,7 @@ void Simulation::StartSimulation(
     settings.m_lengthConstraintsIterations= ctx.lengthConstraintsIterations;
     settings.m_damping                    = ctx.damping;
     settings.m_gravityMagnitude           = ctx.gravityMagnitude;
+    settings.m_tipSeparation              = ctx.tipSeparation;
     {
         const godot::Vector3 w = ctx.wind_velocity;
         const float mag = (float)w.length();
@@ -127,13 +128,17 @@ void Simulation::StartSimulation(
     }
 
     // Update per-object inputs.
-    // NOTE: bones are written into the mapped sim constant buffer then uploaded by UpdateConstantBuffer
-    // inside TressFXSimulation::Simulate().
-    for (HairStrands* h : ctx.hairStrands) {
+    // Bones come pre-snapshotted from the main thread (ctx.bone_matrices) —
+    // never touch Skeleton3D here. They land in the CPU-side constant buffer,
+    // uploaded by UpdateConstantBuffer inside Simulate().
+    for (size_t i = 0; i < ctx.hairStrands.size(); ++i) {
+        HairStrands* h = ctx.hairStrands[i];
         if (!h || !h->GetTressFXHandle()) {
             continue;
         }
-        h->UpdateBones(commandContext);
+        if (i < ctx.bone_matrices.size() && ctx.bone_matrices[i].size() > 0) {
+            h->ApplyBoneMatricesBytes(ctx.bone_matrices[i]);
+        }
         h->GetTressFXHandle()->UpdateSimulationParameters(&settings, timeStep);
         h->TransitionRenderingToSim(commandContext);
     }
@@ -149,9 +154,9 @@ void Simulation::StartSimulation(
         h->TransitionSimToRendering(commandContext);
     }
 
-    // Submit all queued compute work.
+    // Close the compute list. On the main RD this never submits or syncs —
+    // the engine owns the frame (the per-frame GPU stall is gone).
     device->EndAndSubmitCommandBuffer();
-    device->FlushGPU();
     m_simulationRunning = true;
 }
 

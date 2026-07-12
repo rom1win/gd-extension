@@ -1708,6 +1708,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.551654, 0.284321)
 shape = SubResource("CapsuleShape3D_j1lhe")
 
 [node name="TressFXCharacter" type="TressFXCharacter" parent="."]
+gate_capture_mode = false
 
 [node name="Collision_body" type="TressFXCollisionNode" parent="TressFXCharacter"]
 tfx_mesh_file = "res://Meshes/HairAsset/Ratboy/Ratboy_body.tfxmesh"

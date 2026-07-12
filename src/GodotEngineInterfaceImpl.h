@@ -62,7 +62,7 @@ class EI_CommandContext {
 public:
     EI_CommandContext() = default;
 
-    void set_rd(godot::RenderingDevice* p_rd) { rd = p_rd; }
+    void set_rd(godot::RenderingDevice* p_rd);
 
     void SubmitBarrier(int numBarriers, EI_Barrier* barriers);
     void BindPSO(EI_PSO* pso);
@@ -86,6 +86,8 @@ private:
     int64_t compute_list = -1;
     EI_PSO* bound_pso = nullptr;
     bool has_queued_lists = false;
+    // True when rd is the engine's main RenderingDevice: submit()/sync() forbidden.
+    bool is_main_rd = false;
 };
 
 class EI_Marker
@@ -185,6 +187,11 @@ public:
     // Local RenderingDevice accessor (main-thread only). Used for early simulation bring-up
     // and CPU readback; main-RD work must still be scheduled on the render thread.
     godot::RenderingDevice* GetLocalRenderingDevice() { return get_rd(); }
+
+    // A1: route ALL EI resources/dispatches to the main RenderingDevice.
+    // When enabled, every GPU-touching call must run on the render thread.
+    void SetUseMainRD(bool p_enable) { m_use_main_rd = p_enable; }
+    bool UsingMainRD() const { return m_use_main_rd; }
     void OnDestroy() {}
     
     void OnBeginFrame(bool bDoAsync) {}
@@ -234,6 +241,7 @@ public:
 private:
     godot::RenderingDevice* get_rd();
     godot::RenderingDevice* m_local_rd = nullptr;
+    bool m_use_main_rd = false;
 
     std::unique_ptr<EI_Resource> m_default_white_texture;
     std::unique_ptr<EI_Resource> m_default_linear_sampler;

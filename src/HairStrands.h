@@ -5,6 +5,7 @@
 
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/rid.hpp>
 
 class EI_Scene;
 class EI_CommandContext;
@@ -37,6 +38,27 @@ public:
     void TransitionSimToRendering(EI_CommandContext& context);
     void TransitionRenderingToSim(EI_CommandContext& context);
     void UpdateBones(EI_CommandContext& context);
+
+    // A1 threading split:
+    // MAIN thread: snapshot the skeleton's skinning matrices (pose x rest^-1)
+    // as raw AMD::float4x4 bytes. Safe: touches Skeleton3D only.
+    godot::PackedByteArray SnapshotBoneMatrices() const;
+    // RENDER thread: write a snapshot into the hair object's constant buffer.
+    void ApplyBoneMatricesBytes(const godot::PackedByteArray& bytes);
+
+    // RID of the simulated positions buffer (for async readback). Invalid RID
+    // until EnsureTressFXObjectCreated() has run.
+    godot::RID GetPositionsBufferRID() const;
+
+    int GetVertsPerStrand() const;
+    int GetFollowPerGuide() const;
+
+    // CPU-only: slice guide-strand positions out of a full positions-buffer
+    // readback (interleaved guide+follow slots), same output layout as
+    // PackGuidePositionsVec4. Used by the async debug-line path.
+    bool ExtractGuidePositionsVec4FromBytes(const godot::PackedByteArray& all_positions,
+        int guide_strand_limit,
+        godot::PackedByteArray& out_bytes, int& out_vertices_per_strand, int& out_guide_strands) const;
 
     // Path A (CPU-only bring-up): build a simple line mesh from the loaded asset positions.
     // Coordinates are in the hair asset's local space (attach the MeshInstance as a child of the character).

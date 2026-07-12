@@ -341,6 +341,85 @@ void HairStrands::UpdateBones(EI_CommandContext& context) {
     m_pStrands->UpdateBoneMatrices(pBoneMatricesInWS, (int)bone_mats.size());
 }
 
+godot::PackedByteArray HairStrands::SnapshotBoneMatrices() const {
+    // MAIN thread only (reads the Skeleton3D through EI_Scene).
+    godot::PackedByteArray out;
+    if (!m_pScene) {
+        return out;
+    }
+    const std::vector<XMMATRIX>& mats = m_pScene->GetWorldSpaceSkeletonMats(m_skinNumber);
+    if (mats.empty()) {
+        return out;
+    }
+    out.resize((int64_t)mats.size() * (int64_t)sizeof(XMMATRIX));
+    std::memcpy(out.ptrw(), mats.data(), (size_t)out.size());
+    return out;
+}
+
+void HairStrands::ApplyBoneMatricesBytes(const godot::PackedByteArray& bytes) {
+    // RENDER thread: pure CPU write into the hair object's constant buffer.
+    if (!m_pStrands || bytes.size() < (int64_t)sizeof(AMD::float4x4)) {
+        return;
+    }
+    const int count = (int)(bytes.size() / (int64_t)sizeof(AMD::float4x4));
+    m_pStrands->UpdateBoneMatrices(reinterpret_cast<const AMD::float4x4*>(bytes.ptr()), count);
+}
+
+godot::RID HairStrands::GetPositionsBufferRID() const {
+    if (!m_pStrands) {
+        return godot::RID();
+    }
+    EI_Resource* res = m_pStrands->GetDynamicState().GetPositionsResource();
+    return res ? res->rid : godot::RID();
+}
+
+int HairStrands::GetVertsPerStrand() const {
+    return m_asset ? (int)m_asset->m_numVerticesPerStrand : 0;
+}
+
+int HairStrands::GetFollowPerGuide() const {
+    return m_asset ? (int)m_asset->m_numFollowStrandsPerGuide : 0;
+}
+
+bool HairStrands::ExtractGuidePositionsVec4FromBytes(const godot::PackedByteArray& all_positions,
+        int guide_strand_limit,
+        godot::PackedByteArray& out_bytes, int& out_vertices_per_strand, int& out_guide_strands) const {
+    out_bytes = godot::PackedByteArray();
+    out_vertices_per_strand = 0;
+    out_guide_strands = 0;
+
+    if (!m_asset) {
+        return false;
+    }
+    const int vps = (int)m_asset->m_numVerticesPerStrand;
+    const int guide_strands_total = (int)m_asset->m_numGuideStrands;
+    if (vps <= 0 || guide_strands_total <= 0) {
+        return false;
+    }
+    const int guide_strands = (guide_strand_limit > 0) ? std::min<int>(guide_strands_total, guide_strand_limit) : guide_strands_total;
+    const int guide_stride = (int)m_asset->m_numFollowStrandsPerGuide + 1;
+    const int bytes_per_pos = 16;
+    const int64_t total_bytes = all_positions.size();
+
+    out_bytes.resize((int64_t)guide_strands * vps * bytes_per_pos);
+    uint8_t* dst = out_bytes.ptrw();
+    const uint8_t* src = all_positions.ptr();
+
+    for (int g = 0; g < guide_strands; ++g) {
+        const int64_t src_off = (int64_t)(g * guide_stride) * vps * bytes_per_pos;
+        const int64_t dst_off = (int64_t)g * vps * bytes_per_pos;
+        const int64_t copy_bytes = (int64_t)vps * bytes_per_pos;
+        if (src_off + copy_bytes > total_bytes) {
+            return false;
+        }
+        std::memcpy(dst + dst_off, src + src_off, (size_t)copy_bytes);
+    }
+
+    out_vertices_per_strand = vps;
+    out_guide_strands = guide_strands;
+    return true;
+}
+
 godot::Ref<godot::ArrayMesh> HairStrands::CreateDebugLineMesh(bool guides_only, int strand_limit) const {
     if (!m_asset) {
         return godot::Ref<godot::ArrayMesh>();

@@ -11,6 +11,12 @@
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/rendering_device.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/core/math.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
 #include "tressfx_collision_node.h"
 #include "EngineInterface.h"
 #include "Simulation.h"
@@ -19,6 +25,35 @@
 #include "GodotScene.h"
 
 using namespace godot;
+
+// A1: GPU-owned state (kernel PSOs, main-RD buffers inside the hair objects)
+// must be destroyed on the render thread. teardown_gpu_runtime() moves the
+// owning pointers out of the node into this heap payload and schedules
+// _rt_destroy_gpu_payload; render-thread callables run in FIFO order, so any
+// still-pending sim tick executes before the payload is freed.
+struct TressFXGpuTeardownPayload {
+    std::unique_ptr<Simulation> sim;
+    std::vector<std::unique_ptr<HairStrands>> hair;
+    std::vector<std::unique_ptr<CollisionMesh>> coll;
+    std::vector<std::unique_ptr<EI_Scene>> scenes;
+};
+
+// Identity skinning matrices for the whole sim UBO bone array (gate capture
+// runs with a frozen skeleton, matching the reference dumps).
+static PackedByteArray make_identity_bone_matrices() {
+    constexpr int kBoneCount = 128;   // g_BoneSkinningMatrix[128] in the kernels
+    constexpr int kFloatsPerMat = 16; // float4x4
+    PackedByteArray out;
+    out.resize(kBoneCount * kFloatsPerMat * 4); // resize() zero-fills
+    uint8_t* w = out.ptrw();
+    const float one = 1.0f;
+    for (int m = 0; m < kBoneCount; ++m) {
+        for (int d = 0; d < 4; ++d) {
+            memcpy(w + ((size_t)m * kFloatsPerMat + (size_t)d * 5) * 4, &one, 4);
+        }
+    }
+    return out;
+}
 
 void TressFXCharacter::_bind_methods() {
     // Only expose load_all_assets to scripting for now. The register_* methods are
@@ -44,6 +79,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_wind_velocity", "wind_velocity"), &TressFXCharacter::set_wind_velocity);
     ClassDB::bind_method(D_METHOD("get_wind_velocity"), &TressFXCharacter::get_wind_velocity);
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "wind_velocity"), "set_wind_velocity", "get_wind_velocity");
+
+    ClassDB::bind_method(D_METHOD("set_gate_capture_mode", "enabled"), &TressFXCharacter::set_gate_capture_mode);
+    ClassDB::bind_method(D_METHOD("get_gate_capture_mode"), &TressFXCharacter::get_gate_capture_mode);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gate_capture_mode"), "set_gate_capture_mode", "get_gate_capture_mode");
 
     ClassDB::bind_method(D_METHOD("set_gravity_magnitude", "v"), &TressFXCharacter::set_gravity_magnitude);
     ClassDB::bind_method(D_METHOD("get_gravity_magnitude"), &TressFXCharacter::get_gravity_magnitude);
@@ -134,110 +173,271 @@ void TressFXCharacter::_process(double delta) {
         update_debug_hair_lines();
     }
 
-    if (m_gpu_mode_active) {
-        update_gpu_debug_hair_lines_3d_transform();
+    if (!m_gpu_mode_active) {
+        return;
     }
 
-    SimulationContext ctx;
-    ctx.hairStrands.reserve(m_hairStrands.size());
-    for (auto& h : m_hairStrands) {
-        ctx.hairStrands.push_back(h.get());
-    }
+    update_gpu_debug_hair_lines_3d_transform();
 
-    ctx.collisionMeshes.reserve(m_collisionMeshes.size());
-    for (auto& c : m_collisionMeshes) {
-        ctx.collisionMeshes.push_back(c.get());
-    }
-
-    ctx.wind_velocity             = m_wind_velocity;
-    ctx.gravityMagnitude          = m_gravity_magnitude;
-    ctx.damping                   = m_damping;
-    ctx.globalConstraintStiffness = m_global_stiffness;
-    ctx.globalConstraintsRange    = m_global_range;
-    ctx.localConstraintStiffness  = m_local_stiffness;
-
-    // Late init GPU mode at first runtime tick. This avoids touching RenderingDevice too early
-    // during scene initialization and prevents startup crashes.
-    if (m_gpu_mode_active && !m_gpu_runtime_initialized) {
-        if (!GetDevice()) {
+    // A1: late init. The Simulation host object is created here on the main
+    // thread, but ALL its GPU work (kernel PSO compile, buffer creation) runs
+    // on the render thread. No RenderingDevice call happens on the main thread.
+    if (!m_gpu_runtime_initialized) {
+        if (!GetDevice() || m_hairStrands.empty()) {
             return;
         }
         m_pSimulation = std::make_unique<Simulation>();
-        m_pSimulation->Initialize();
 
+        // Cache dump metadata now: the gate-dump callback runs on the render
+        // thread and must not walk the node's containers.
+        m_gate_vps    = m_hairStrands[0]->GetVertsPerStrand();
+        m_gate_guides = m_hairStrands[0]->GetGuideStrandCount();
+        m_gate_stride = m_hairStrands[0]->GetFollowPerGuide() + 1;
+
+        PackedInt64Array hair_ptrs;
         for (auto& h : m_hairStrands) {
-            if (h) {
-                h->EnsureTressFXObjectCreated();
-            }
+            hair_ptrs.push_back((int64_t)(intptr_t)h.get());
         }
+
+        // Arm state BEFORE scheduling: with single-threaded rendering (Godot's
+        // default), call_on_render_thread executes the callable INLINE, so
+        // _rt_initialize_gpu sets m_rt_gpu_ready before this call returns —
+        // writing these flags afterwards would clobber it.
         m_gpu_runtime_initialized = true;
+        m_rt_gpu_ready.store(false);
+        m_sim_steps = 0;
+
+        RenderingServer::get_singleton()->call_on_render_thread(
+            callable_mp(this, &TressFXCharacter::_rt_initialize_gpu)
+                .bind((int64_t)(intptr_t)m_pSimulation.get(), hair_ptrs));
+        if (m_gate_capture_mode) {
+            UtilityFunctions::print("TressFXCharacter: GATE A1 capture mode — fixed dt=1/60, identity bones, wind off; dumps at sim steps 1/30/120");
+        }
     }
 
-    // Simulation (local-RD bring-up): run compute kernels and update GPU positions.
-    if (m_pSimulation) {
-        m_pSimulation->StartSimulation(delta, ctx, /*bUpdateCollMesh=*/false, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
-        m_pSimulation->WaitOnSimulation();
-    }
-
-    // GPU guide-lines:
-    // - If a GPU hair object exists, read back simulated guide positions.
-    // - Otherwise, fall back to CPU-skinned guide positions.
-    if (m_gpu_mode_active) {
-        if (EI_Device* device = GetDevice()) {
-            if (!m_hairStrands.empty()) {
-                godot::PackedByteArray pos_bytes;
-                int vps = 0;
-                int guides = 0;
-
-                bool ok = false;
-                if (m_hairStrands[0]->GetTressFXHandle()) {
-                    ok = m_hairStrands[0]->PackSimulatedGuidePositionsVec4(pos_bytes, vps, guides, m_debug_max_guide_strands);
-                }
-                if (!ok) {
-                    ok = m_hairStrands[0]->PackGuidePositionsVec4(pos_bytes, vps, guides);
-                }
-
-                if (ok) {
-                    // Cache for optional overlay output.
-                    m_last_guide_positions_bytes = pos_bytes;
-                    m_last_vertices_per_strand = vps;
-                    m_last_guide_strands = guides;
-                    m_last_guide_positions_valid = true;
-
-                    // In-world 3D debug lines (always on in GPU mode at this milestone).
-                    refresh_gpu_debug_hair_lines_3d();
-                    update_gpu_debug_hair_lines_3d_mesh(pos_bytes, vps, guides);
-                } else {
-                    m_last_guide_positions_valid = false;
-                }
-            }
-
-            // GATE2 TEMP: one-shot dump of ALL simulated guide positions at frame 300
-            // for tools/compare_gate2.py (C++ vs GDScript residual-stretch comparison).
-            // Agreed Gates 0-2 debug; removed with the C++ layer after Gate 2.
-            if (m_frame_index == 300 && !m_hairStrands.empty() && m_hairStrands[0]->GetTressFXHandle()) {
-                godot::PackedByteArray full_bytes;
-                int full_vps = 0;
-                int full_guides = 0;
-                if (m_hairStrands[0]->PackSimulatedGuidePositionsVec4(full_bytes, full_vps, full_guides, 0)) {
-                    godot::Ref<godot::FileAccess> gf = godot::FileAccess::open("res://gate2_cpp.bin", godot::FileAccess::WRITE);
-                    if (gf.is_valid()) {
-                        gf->store_32((uint32_t)full_vps);
-                        gf->store_32((uint32_t)full_guides);
-                        gf->store_buffer(full_bytes);
-                        gf->close();
-                        UtilityFunctions::print("TressFXCharacter: GATE2 dump written to res://gate2_cpp.bin (vps=", full_vps, " guides=", full_guides, ")");
-                    }
-                }
-            }
-
-            // Optional legacy overlay render: only execute when requested by a UI viewer.
-            if (m_overlay_texture_requested && m_last_guide_positions_valid) {
-                device->SetGuideLinesSource(m_last_guide_positions_bytes, m_last_vertices_per_strand, m_last_guide_strands);
-                device->RunMainRDGuideLinesOnce();
+    // Schedule one simulation step on the render thread. Every input is
+    // snapshotted by value here; the render thread never touches scene nodes.
+    if (m_pSimulation && m_rt_gpu_ready.load()) {
+        Array bones_per_hair;
+        for (auto& h : m_hairStrands) {
+            if (m_gate_capture_mode) {
+                bones_per_hair.append(make_identity_bone_matrices());
+            } else {
+                bones_per_hair.append(h ? h->SnapshotBoneMatrices() : PackedByteArray());
             }
         }
-        m_overlay_texture_requested = false;
+
+        const Vector3 wind = m_gate_capture_mode ? Vector3() : m_wind_velocity;
+        PackedFloat32Array params;
+        params.resize(8);
+        params[0] = (float)wind.x;
+        params[1] = (float)wind.y;
+        params[2] = (float)wind.z;
+        params[3] = m_gravity_magnitude;
+        params[4] = m_damping;
+        params[5] = m_global_stiffness;
+        params[6] = m_global_range;
+        params[7] = m_local_stiffness;
+
+        const double dt = m_gate_capture_mode ? (1.0 / 60.0) : delta;
+
+        m_sim_steps++;
+        int64_t gate_dump_frame = 0;
+        if (m_gate_capture_mode && (m_sim_steps == 1 || m_sim_steps == 30 || m_sim_steps == 120)) {
+            gate_dump_frame = (int64_t)m_sim_steps;
+        }
+
+        PackedInt64Array hair_ptrs;
+        for (auto& h : m_hairStrands) {
+            hair_ptrs.push_back((int64_t)(intptr_t)h.get());
+        }
+
+        RenderingServer::get_singleton()->call_on_render_thread(
+            callable_mp(this, &TressFXCharacter::_rt_sim_tick)
+                .bind(dt, params, bones_per_hair, hair_ptrs,
+                      (int64_t)(intptr_t)m_pSimulation.get(), gate_dump_frame));
+    }
+
+    // Consume the latest async readback. Guide positions arrive one or two
+    // frames late; that is the price of never stalling the GPU.
+    PackedByteArray latest;
+    {
+        std::lock_guard<std::mutex> lock(m_readback_mutex);
+        if (m_readback_new) {
+            latest = m_readback_positions;
+            m_readback_new = false;
+        }
+    }
+
+    if (!m_hairStrands.empty()) {
+        godot::PackedByteArray pos_bytes;
+        int vps = 0;
+        int guides = 0;
+        bool ok = false;
+        if (latest.size() > 0) {
+            ok = m_hairStrands[0]->ExtractGuidePositionsVec4FromBytes(latest, m_debug_max_guide_strands, pos_bytes, vps, guides);
+        } else if (!m_last_guide_positions_valid) {
+            // Nothing read back yet (first frames): show rest positions.
+            ok = m_hairStrands[0]->PackGuidePositionsVec4(pos_bytes, vps, guides);
+        }
+        if (ok) {
+            m_last_guide_positions_bytes = pos_bytes;
+            m_last_vertices_per_strand = vps;
+            m_last_guide_strands = guides;
+            m_last_guide_positions_valid = true;
+
+            refresh_gpu_debug_hair_lines_3d();
+            update_gpu_debug_hair_lines_3d_mesh(pos_bytes, vps, guides);
+        }
+    }
+
+    // Optional legacy overlay render: only execute when requested by a UI viewer.
+    if (m_overlay_texture_requested && m_last_guide_positions_valid) {
+        if (EI_Device* device = GetDevice()) {
+            device->SetGuideLinesSource(m_last_guide_positions_bytes, m_last_vertices_per_strand, m_last_guide_strands);
+            device->RunMainRDGuideLinesOnce();
+        }
+    }
+    m_overlay_texture_requested = false;
+}
+
+void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Array& hair_ptrs) {
+    // RENDER thread. Compile the kernel PSOs and create the GPU hair objects on
+    // the main RenderingDevice.
+    Simulation* sim = reinterpret_cast<Simulation*>((intptr_t)sim_ptr);
+    if (!sim) {
+        return;
+    }
+    sim->Initialize();
+    for (int64_t i = 0; i < hair_ptrs.size(); ++i) {
+        HairStrands* h = reinterpret_cast<HairStrands*>((intptr_t)hair_ptrs[i]);
+        if (h) {
+            h->EnsureTressFXObjectCreated();
+        }
+    }
+    m_rt_gpu_ready.store(true);
+}
+
+void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
+        const Array& bones_per_hair, const PackedInt64Array& hair_ptrs,
+        int64_t sim_ptr, int64_t gate_dump_frame) {
+    // RENDER thread. Inputs arrive by value; the sim/hair pointers stay valid
+    // because teardown_gpu_runtime queues destruction behind this call (FIFO).
+    Simulation* sim = reinterpret_cast<Simulation*>((intptr_t)sim_ptr);
+    if (!sim) {
+        return;
+    }
+
+    SimulationContext ctx;
+    ctx.hairStrands.reserve((size_t)hair_ptrs.size());
+    for (int64_t i = 0; i < hair_ptrs.size(); ++i) {
+        ctx.hairStrands.push_back(reinterpret_cast<HairStrands*>((intptr_t)hair_ptrs[i]));
+        if (i < bones_per_hair.size()) {
+            ctx.bone_matrices.push_back((PackedByteArray)bones_per_hair[i]);
+        }
+    }
+
+    if (params.size() >= 8) {
+        ctx.wind_velocity             = Vector3(params[0], params[1], params[2]);
+        ctx.gravityMagnitude          = params[3];
+        ctx.damping                   = params[4];
+        ctx.globalConstraintStiffness = params[5];
+        ctx.globalConstraintsRange    = params[6];
+        ctx.localConstraintStiffness  = params[7];
+    }
+
+    sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/false, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
+
+    // Queue async readbacks AFTER the dispatches so the data reflects this step.
+    if (ctx.hairStrands.empty() || !ctx.hairStrands[0]) {
+        return;
+    }
+    const RID rid = ctx.hairStrands[0]->GetPositionsBufferRID();
+    RenderingServer* rs = RenderingServer::get_singleton();
+    RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
+    static bool s_tick_logged = false;
+    if (!s_tick_logged) {
+        s_tick_logged = true;
+        UtilityFunctions::print("TressFXCharacter: first sim tick on render thread (rd=",
+            rd ? "ok" : "null", " positions_rid_valid=", rid.is_valid() ? "yes" : "no", ")");
+    }
+    if (!rd || !rid.is_valid()) {
+        return;
+    }
+    const Error err = rd->buffer_get_data_async(rid, callable_mp(this, &TressFXCharacter::_on_positions_async));
+    static bool s_readback_logged = false;
+    if (!s_readback_logged) {
+        s_readback_logged = true;
+        UtilityFunctions::print("TressFXCharacter: buffer_get_data_async err=", (int64_t)err);
+    }
+    if (gate_dump_frame > 0) {
+        rd->buffer_get_data_async(rid,
+            callable_mp(this, &TressFXCharacter::_on_gate_dump_async).bind(gate_dump_frame));
+    }
+}
+
+void TressFXCharacter::_on_positions_async(const PackedByteArray& data) {
+    // Render-thread callback: just stash; _process consumes on the main thread.
+    std::lock_guard<std::mutex> lock(m_readback_mutex);
+    m_readback_positions = data;
+    m_readback_new = true;
+}
+
+void TressFXCharacter::_on_gate_dump_async(const PackedByteArray& data, int64_t frame) {
+    // Render-thread callback: file I/O only, no scene access. Same format and
+    // filenames as the GDScript reference capture so tools/compare_dump.py
+    // compares them directly.
+    const String dir = ProjectSettings::get_singleton()->globalize_path("res://").path_join("../reference_new");
+    DirAccess::make_dir_recursive_absolute(dir);
+    const String path = dir.path_join(String("gdscript_ref_frame_") + String::num_int64(frame).pad_zeros(3) + String(".bin"));
+    Ref<FileAccess> f = FileAccess::open(path, FileAccess::WRITE);
+    if (f.is_null()) {
+        UtilityFunctions::push_error(String("TressFXCharacter: cannot write gate dump ") + path);
+        return;
+    }
+    f->store_32((uint32_t)m_gate_vps);
+    f->store_32((uint32_t)m_gate_guides);
+    f->store_32((uint32_t)m_gate_stride);
+    f->store_32((uint32_t)frame);
+    f->store_buffer(data);
+    f->close();
+    UtilityFunctions::print("TressFXCharacter: GATE A1 dump written: ", path);
+}
+
+void TressFXCharacter::_rt_destroy_gpu_payload(int64_t payload_ptr) {
+    // RENDER thread. Frees the main-RD GPU resources owned by the hair objects.
+    delete reinterpret_cast<TressFXGpuTeardownPayload*>((intptr_t)payload_ptr);
+}
+
+void TressFXCharacter::teardown_gpu_runtime() {
+    if (!m_gpu_runtime_initialized) {
+        // GPU never touched: plain main-thread destruction is safe.
+        m_pSimulation.reset();
+        return;
+    }
+
+    TressFXGpuTeardownPayload* payload = new TressFXGpuTeardownPayload();
+    payload->sim    = std::move(m_pSimulation);
+    payload->hair   = std::move(m_hairStrands);
+    payload->coll   = std::move(m_collisionMeshes);
+    payload->scenes = std::move(m_adapterScenes);
+    m_hairStrands.clear();
+    m_collisionMeshes.clear();
+    m_adapterScenes.clear();
+
+    m_gpu_runtime_initialized = false;
+    m_rt_gpu_ready.store(false);
+    m_sim_steps = 0;
+    m_last_guide_positions_valid = false;
+
+    RenderingServer* rs = RenderingServer::get_singleton();
+    if (rs) {
+        rs->call_on_render_thread(
+            callable_mp_static(&TressFXCharacter::_rt_destroy_gpu_payload)
+                .bind((int64_t)(intptr_t)payload));
+    } else {
+        // Engine already gone (late shutdown): nothing else will touch the GPU.
+        delete payload;
     }
 }
 
@@ -416,9 +616,10 @@ void TressFXCharacter::load_all_assets() {
 
 void TressFXCharacter::set_debug_draw_hair_lines(bool enabled) {
     m_debug_draw_hair_lines = enabled;
+    const bool in_editor = (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint());
 
     // If toggled in the editor, ensure CPU-side assets are loaded so the debug mesh appears.
-    if (m_debug_draw_hair_lines && Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
+    if (m_debug_draw_hair_lines && in_editor) {
         if (m_hairStrands.empty()) {
             load_all_assets();
         }
@@ -426,6 +627,12 @@ void TressFXCharacter::set_debug_draw_hair_lines(bool enabled) {
 
     refresh_backend_mode();
     refresh_debug_hair_lines();
+
+    // Runtime mode switch: a live GPU runtime is torn down on the render thread,
+    // which takes the hair objects with it — reload them for the new mode.
+    if (!in_editor && m_hairStrands.empty() && !m_hairDescriptions.empty() && is_inside_tree()) {
+        call_deferred("load_all_assets");
+    }
 }
 
 bool TressFXCharacter::get_debug_draw_hair_lines() const {
@@ -469,6 +676,14 @@ void TressFXCharacter::set_debug_hair_yaw_degrees(double degrees) {
 
 double TressFXCharacter::get_debug_hair_yaw_degrees() const {
     return m_debug_hair_yaw_degrees;
+}
+
+void TressFXCharacter::set_gate_capture_mode(bool enabled) {
+    m_gate_capture_mode = enabled;
+}
+
+bool TressFXCharacter::get_gate_capture_mode() const {
+    return m_gate_capture_mode;
 }
 
 void TressFXCharacter::set_wind_velocity(const godot::Vector3& wind_velocity) {
@@ -796,8 +1011,7 @@ void TressFXCharacter::refresh_backend_mode() {
     if (in_editor) {
         // Editor safety: never initialize GPU/RenderingDevice.
         m_gpu_mode_active = false;
-        m_gpu_runtime_initialized = false;
-        m_pSimulation.reset();
+        teardown_gpu_runtime();
         clear_gpu_debug_hair_lines_3d();
         m_last_guide_positions_valid = false;
         update_process_state();
@@ -806,28 +1020,26 @@ void TressFXCharacter::refresh_backend_mode() {
 
     if (m_debug_draw_hair_lines) {
         // Debug/CPU mode: show CPU guide lines and keep GPU objects off.
+        // NOTE: if the GPU runtime was live, teardown moves the hair objects to
+        // the render thread for destruction; set_debug_draw_hair_lines reloads
+        // assets afterwards so the CPU debug path has data again.
         m_gpu_mode_active = false;
-        m_gpu_runtime_initialized = false;
-        m_pSimulation.reset();
+        teardown_gpu_runtime();
         clear_gpu_debug_hair_lines_3d();
         m_last_guide_positions_valid = false;
         UtilityFunctions::print("TressFXCharacter: debug enabled -> CPU debug render (GPU disabled)");
     } else {
-        // GPU mode: use Godot RenderingDevice.
-        // Initialize Simulation and run the current GPU milestone (simulation + in-world guide-line debug).
+        // GPU mode: use Godot's main RenderingDevice (A1).
         // If shaders are missing, PSO creation will warn once per kernel and Simulation will remain inert.
         m_gpu_mode_active = true;
-        m_pSimulation.reset();
+        teardown_gpu_runtime();
         m_last_guide_positions_valid = false;
 
         if (!GetDevice()) {
             UtilityFunctions::push_warning("TressFXCharacter: GPU mode requested but EI_Device is null");
         }
 
-        // Defer simulation + GPU object creation until the first _process().
-        m_gpu_runtime_initialized = false;
-
-        UtilityFunctions::print("TressFXCharacter: debug disabled -> GPU mode (simulation + in-world guide debug)");
+        UtilityFunctions::print("TressFXCharacter: debug disabled -> GPU mode (main-RD simulation + in-world guide debug)");
     }
 
     update_process_state();
@@ -894,5 +1106,9 @@ void TressFXCharacter::_notification(int what) {
         // Ensure debug nodes/materials are released before teardown.
         clear_gpu_debug_hair_lines_3d();
         clear_debug_hair_lines();
+
+        // A1: GPU-owned objects (main-RD buffers/PSOs) are destroyed on the
+        // render thread, behind any sim tick still in flight.
+        teardown_gpu_runtime();
     }
 }

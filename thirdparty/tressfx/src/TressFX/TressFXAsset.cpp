@@ -388,8 +388,17 @@ void TressFXAsset::ComputeRestLengths()
 
         for (int j = 0; j < m_numVerticesPerStrand - 1; j++)
         {
-            restLen[index++] =
-                (pos[indexRootVert + j] - pos[indexRootVert + j + 1]).Length();
+            // Godot port: compute in double precision with a single rounding to
+            // float. The GDScript validation harness (tfx_asset.gd) cooks rest
+            // lengths this way; 17% of segments differ by 1 ulp if this is done
+            // in per-op float32, and the solver amplifies that into visible
+            // drift over ~100 frames (breaks tools/compare_dump.py).
+            const Vector3& a = pos[indexRootVert + j];
+            const Vector3& b = pos[indexRootVert + j + 1];
+            const double dx = (double)a.x - (double)b.x;
+            const double dy = (double)a.y - (double)b.y;
+            const double dz = (double)a.z - (double)b.z;
+            restLen[index++] = (float)sqrt(dx * dx + dy * dy + dz * dz);
         }
 
         // Since number of edges are one less than number of vertices in hair strand, below

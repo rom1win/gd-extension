@@ -5,9 +5,15 @@
 #include <vector>
 
 #include <godot_cpp/variant/vector3.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 
 // Godot-compatible replacement for the TressFX sample's Simulation class.
 // Wraps the core TressFXSimulation class.
+//
+// A1 threading contract: Initialize() and StartSimulation() run ONLY on the
+// render thread (scheduled via RenderingServer::call_on_render_thread by
+// TressFXCharacter). They never touch scene nodes; bone matrices arrive
+// pre-snapshotted by value in SimulationContext::bone_matrices.
 
 class HairStrands;
 class CollisionMesh;
@@ -15,6 +21,11 @@ class CollisionMesh;
 struct SimulationContext {
     std::vector<HairStrands*> hairStrands;
     std::vector<CollisionMesh*> collisionMeshes;
+
+    // Per-hair skeleton snapshot (AMD::float4x4 array bytes, pose x rest^-1,
+    // packing per NOTES.md §1), captured on the MAIN thread. Empty entry =
+    // keep the previously applied matrices.
+    std::vector<godot::PackedByteArray> bone_matrices;
 
     // Wind in world space (direction * magnitude). Default zero = no wind.
     godot::Vector3 wind_velocity = godot::Vector3(0, 0, 0);
@@ -29,6 +40,7 @@ struct SimulationContext {
     int   lengthConstraintsIterations = 3;
     float damping                     = 0.068f;
     float gravityMagnitude            = 0.09f;
+    float tipSeparation               = 1.0f;   // follow-hair spread; RatBoy default (NOTES §6)
 };
 
 class Simulation {
@@ -36,7 +48,10 @@ public:
     Simulation();
     ~Simulation();
 
+    // Render thread only: compiles the kernel PSOs on the main RD.
     void Initialize();
+    // Render thread only: applies bones/params and dispatches the kernel chain
+    // on the main RD. Ends the compute list; never submits or syncs.
     void StartSimulation(
         double fTime,
         SimulationContext& ctx,

@@ -1,12 +1,18 @@
 #ifndef TRESSFX_CHARACTER_H
 #define TRESSFX_CHARACTER_H
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/texture2drd.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/node_path.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_int64_array.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "tressfx_node.h"
 #include "Simulation.h"
@@ -61,6 +67,12 @@ public:
 
     void set_wind_velocity(const godot::Vector3& wind_velocity);
     godot::Vector3 get_wind_velocity() const;
+
+    // Gate A1 capture: fixed dt=1/60, identity bones, wind off; writes position
+    // dumps after sim steps 1/30/120 to <repo>/reference_new/ for
+    // tools/compare_dump.py. Off by default (normal demo behavior).
+    void set_gate_capture_mode(bool enabled);
+    bool get_gate_capture_mode() const;
 
     // Simulation physics properties (exposed to inspector).
     void set_gravity_magnitude(float v); float get_gravity_magnitude() const;
@@ -151,6 +163,42 @@ private:
 
     void refresh_backend_mode();
     void update_process_state();
+
+    // A1 main-RD threading. The render-thread entry points below are scheduled
+    // via RenderingServer::call_on_render_thread and never run on the main
+    // thread; they receive every input by value (plus raw pointers that stay
+    // valid because teardown is queued behind them on the same thread).
+    void _rt_initialize_gpu(int64_t sim_ptr, const godot::PackedInt64Array& hair_ptrs);
+    void _rt_sim_tick(double dt, const godot::PackedFloat32Array& params,
+        const godot::Array& bones_per_hair, const godot::PackedInt64Array& hair_ptrs,
+        int64_t sim_ptr, int64_t gate_dump_frame);
+    // Async-readback callbacks (fire on the render thread; only stash data).
+    void _on_positions_async(const godot::PackedByteArray& data);
+    void _on_gate_dump_async(const godot::PackedByteArray& data, int64_t frame);
+    // Frees GPU-owned objects on the render thread (payload allocated by
+    // teardown_gpu_runtime).
+    static void _rt_destroy_gpu_payload(int64_t payload_ptr);
+
+    // Moves the Simulation/HairStrands (and their main-RD buffers) into a heap
+    // payload destroyed on the render thread. Safe to call when nothing was
+    // initialized.
+    void teardown_gpu_runtime();
+
+    bool m_gate_capture_mode = false;
+    std::atomic<bool> m_rt_gpu_ready{false};
+    uint64_t m_sim_steps = 0;
+
+    // Dump metadata cached on the main thread before GPU init so the gate-dump
+    // callback never walks the node's containers from the render thread.
+    int m_gate_vps = 0;
+    int m_gate_guides = 0;
+    int m_gate_stride = 0;
+
+    // Latest async positions readback: written on the render thread,
+    // consumed by _process on the main thread.
+    std::mutex m_readback_mutex;
+    godot::PackedByteArray m_readback_positions;
+    bool m_readback_new = false;
 
     double m_time_seconds = 0.0;
     uint64_t m_frame_index = 0;
