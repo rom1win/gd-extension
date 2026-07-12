@@ -1,4 +1,4 @@
-[gd_scene load_steps=53 format=4 uid="uid://jaaxkayekveb"]
+[gd_scene load_steps=54 format=4 uid="uid://jaaxkayekveb"]
 
 [ext_resource type="Texture2D" uid="uid://dokofnbqtilbh" path="res://Meshes/RatBoy/explodedBase_basics_BaseColor.png" id="1_j1lhe"]
 [ext_resource type="Texture2D" uid="uid://3ly42ha3apkh" path="res://Meshes/RatBoy/file32file31.jpg" id="2_73rgm"]
@@ -29,7 +29,8 @@
 [ext_resource type="Texture2D" uid="uid://2bpjca1d1fsx" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_BaseColor.png" id="27_25y0n"]
 [ext_resource type="Texture2D" uid="uid://c2xrkp8uottdp" path="res://Meshes/RatBoy/file12file10.jpg" id="28_aekav"]
 [ext_resource type="Texture2D" uid="uid://bqmtsrgtgtvsc" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_Normal.png" id="29_in2tx"]
-[ext_resource type="Script" path="res://orbit_light.gd" id="30_orbitlight"]
+[ext_resource type="Script" uid="uid://dbxr7fdsx1xqd" path="res://orbit_light.gd" id="30_orbitlight"]
+[ext_resource type="Script" path="res://head_shake.gd" id="31_headshake"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_mu3m0"]
 resource_name = "Floor"
@@ -1702,6 +1703,8 @@ bones/105/enabled = true
 bones/105/position = Vector3(9.40916, -0.159764, -1.66656e-14)
 bones/105/rotation = Quaternion(0, 0, -0.0147434, 0.999891)
 bones/105/scale = Vector3(1, 1, 1)
+script = ExtResource("31_headshake")
+shaking = false
 
 [node name="Ratboy" type="MeshInstance3D" parent="RatboyNode/CharacterBody3D/Skeleton3D"]
 mesh = SubResource("ArrayMesh_8jmkf")

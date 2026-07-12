@@ -2,7 +2,7 @@
 
 [ext_resource type="PackedScene" uid="uid://jaaxkayekveb" path="res://babylon.tscn" id="1_ig7tw"]
 [ext_resource type="Script" uid="uid://dfdcewm1ht8fi" path="res://guidelines_viewer.gd" id="2_guides"]
-[ext_resource type="Script" path="res://free_cam.gd" id="3_freecam"]
+[ext_resource type="Script" uid="uid://c5yw6jrt1ity3" path="res://free_cam.gd" id="3_freecam"]
 
 [sub_resource type="Environment" id="Environment_ig7tw"]
 ambient_light_source = 2
