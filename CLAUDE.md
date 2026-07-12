@@ -1,6 +1,6 @@
 # Godot TressFX Hair — Project Brief for Claude Code
 
-Read this fully before touching anything. This version (2026-07-12) replaces the earlier
+Read this fully before touching anything. This version (2026-07-13) replaces the earlier
 brief, which wrongly declared a GDScript rewrite as the end product. **The product is
 the C++ GDExtension.** That confusion cost us a near-deletion of the product — never
 repeat it.
@@ -104,14 +104,33 @@ heart; the C++ extension around them is the product.
 - `demo/` — Godot 4.4 project: `main.tscn` is the F5 scene; it instances
   `babylon.tscn`, which contains the `TressFXCharacter` node (and its
   `gate_capture_mode` flag). `gdscript_hair.tscn` = validation harness. Ratboy assets.
-  `free_cam.gd` (F5 scene camera) and `orbit_light.gd` (on `pointLight1` in
-  `babylon.tscn`) are testing tools, not product — free-fly camera and an
-  auto-orbiting light, both added to make visual checks possible without
-  needing manual input every time.
+  `free_cam.gd` (F5 scene camera: WASD+mouse, Esc releases cursor),
+  `orbit_light.gd` (on `pointLight1` in `babylon.tscn`: auto-orbiting light)
+  and `head_shake.gd` (on the Skeleton3D in `babylon.tscn`: procedural
+  head-shake for A3, `shaking` export toggles it) are testing tools, not
+  product — they exist so visual checks need no manual input.
 - `demo/addons/tressfx/` — GDScript validation harness (tfx_asset.gd,
   hair_simulator.gd, hair_sim_node.gd). Not shipped; keep working.
 - `thirdparty/tressfx/` — vendored AMD reference + `LICENSE.AMD-TressFX.txt`
   (must ship with the extension; our GLSL ports are derivative works).
+
+## Running from a fresh clone (any computer)
+
+1. `git lfs install` (once per machine), then
+   `git clone --recursive https://github.com/rom1win/gd-extension.git`
+   (`--recursive` pulls the godot-cpp submodule; LFS pulls the committed DLL).
+   If already cloned without LFS: `git lfs pull`.
+2. Install Godot 4.4 stable (Forward+). Open `demo/project.godot`, press F5.
+   **No C++ build needed to just run**: the debug DLL the manifest points at
+   is committed via LFS.
+3. To MODIFY the C++: install Visual Studio Build Tools (MSVC) + Python +
+   `pip install scons`, then `scons -Q` from the repo root. Each Windows build
+   creates a NEW timestamped DLL and auto-repoints the manifest. `*.dll` is
+   gitignored, so after a build that should ship: `git add -f demo/bin/<new dll>`
+   (it lands in LFS automatically) and commit it together with the manifest.
+4. Specs live in `NOTES.md` (formats/layouts/conventions) and
+   `AUDIT_KERNELS.md` (kernel audit); the plan is this file. Reference dumps
+   for the regression gate are committed in `reference/`.
 
 ## Hard rules
 
@@ -153,12 +172,30 @@ heart; the C++ extension around them is the product.
 
 - **A2 — visible hair: DONE** (see "already done" above). Tag: `gate-a2`.
 
-- **A3 — animation + collision.** Two independent halves; do them in this order.
-  - **A3.1 — animation.** Play Ratboy's walk/idle animation (an `AnimationPlayer`
-    exists in the scene tree; if none, ask the maintainer). The bone path already
-    works (`SnapshotBoneMatrices` per frame); this validates it under real motion.
-    Check: F5 with animation playing — roots stay glued to the scalp through the
-    whole clip, no lag, no explosion.
+- **A3 — animation + collision. IN PROGRESS (branch `a3-animation-collision`).**
+  Two independent halves; do them in this order.
+  - **A3.1 — animation. STARTED; open problem below.** babylon.tscn has NO
+    AnimationPlayer (the source glTF `demo/Meshes/RatBoy/babylon.gltf` has one
+    clip, "All Animations", but it was never carried into the hand-assembled
+    scene). Instead, `demo/head_shake.gd` (attached to the Skeleton3D in
+    babylon.tscn) procedurally shakes `frenchHornMonster_head_JNT` — this IS
+    the Gate A3 stress test. **OPEN PROBLEM:** with the default 35°/2 Hz shake
+    the solver explodes and the hair vanishes (NaN/inf positions make the GPU
+    discard the ribbons — the failure looks like sudden baldness, not visible
+    chaos). The scene currently ships with `shaking = false` on the Skeleton3D
+    node; flip it to true to reproduce. The fix is stabilizing the sim under
+    fast bone motion, NOT weakening the test. Candidate causes to investigate,
+    in order: (1) variable per-frame dt feeding the solver while bones jump
+    far per frame (try fixed dt first to isolate); (2) start gentle — find the
+    amplitude/frequency where instability begins (edit exported vars on the
+    Skeleton3D node) to learn whether it's a cliff or gradual; (3) the AMD
+    reference clamps per-step motion (`g_ClampPositionDelta = 20`, set in
+    `TressFXHairObject.cpp::UpdateSimulationParameters`) — check the GLSL
+    kernels actually apply it the way `TressFXSimulation.hlsl` does; (4) VSP
+    (velocity shock propagation) parameters exist precisely for fast head
+    motion — check NOTES.md §6 and the VSP kernel inputs. Check when fixed:
+    F5 with `shaking = true` — hair swings believably, roots stay glued, no
+    disappearance, for at least 30 seconds.
   - **A3.2 — capsule collision.** Port the collision-capsule block (~40 lines,
     `CapsuleCollision()` + its call site) from vendored `TressFXSimulation.hlsl` into
     `TressFXSimulation.LengthConstriantsWindAndCollision.comp.glsl`. This IS a kernel
