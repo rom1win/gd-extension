@@ -1,6 +1,6 @@
 # Godot TressFX Hair — Project Brief for Claude Code
 
-Read this fully before touching anything. This version (2026-07-11) replaces the earlier
+Read this fully before touching anything. This version (2026-07-12) replaces the earlier
 brief, which wrongly declared a GDScript rewrite as the end product. **The product is
 the C++ GDExtension.** That confusion cost us a near-deletion of the product — never
 repeat it.
@@ -58,25 +58,56 @@ heart; the C++ extension around them is the product.
   must keep it green (or consciously re-baseline with my approval).
 - **Main-RD pattern first proven** by the GDScript harness (`demo/addons/tressfx/`),
   which stays as **validation tooling only, not product**.
+- **A2 — visible hair: DONE, gate green (2026-07-12).** Real rendered strands
+  replace the debug guide lines. GPU-to-GPU pipeline, no CPU readback on the
+  render path: a compute pass (`TressFXPositionTexture.Copy.comp.glsl`) copies
+  every simulated vertex into a 512x512 RGBA32F texture
+  (`EI_Device::DispatchPositionTextureCopy`/`GetPositionTextureRID`,
+  `TressFXCharacter::get_position_texture`); a ribbon `ArrayMesh` (placeholder
+  vertex data only — real positions come from the texture) is shaded by
+  `demo/shaders/hair_ribbon.gdshader`, whose vertex stage expands each strand
+  into a camera-facing ribbon and whose custom `light()` implements real
+  Kajiya-Kay hair lighting (ported from `TressFXLighting.hlsl`
+  `ComputeDiffuseSpecFactors`). New node properties: `hair_fiber_radius`,
+  `hair_root_color`, `hair_tip_color`, `show_gpu_debug_lines` (debug lines now
+  hidden by default). Gate: `compare_dump.py` green (physics unchanged),
+  visually confirmed lit/shadowed fur with a moving light, no popping/culling
+  from any camera angle. **1080p/60fps was not measured** — the maintainer
+  explicitly waived that check ("don't worry about FPS, they are fine"); if
+  performance is ever in question later, measure it then.
+  Two Godot 4 shader gotchas hit during this work, worth knowing before
+  touching `hair_ribbon.gdshader` again: (1) the `light()` processor function
+  cannot read `TANGENT`/`BINORMAL` directly (only `vertex()`/`fragment()`
+  can) — pass what you need through a `varying` set in `fragment()`; (2)
+  `SHADOW_ATTENUATION` is a Godot 3 built-in that no longer exists in Godot 4
+  — `ATTENUATION` already includes the shadow term.
 - **AMD reference vendored**: `thirdparty/tressfx/` (all needed sources, all 13 HLSL
   shaders, AMD MIT license). The untracked `TressFX/` checkout is obsolete. Never read
   either tree broadly — use `NOTES.md` first, then specific vendored files.
 - Git tags: `cpp-reference` (pre-rewrite baseline, never delete/rewrite), `gate-1`,
-  `gate-2`, `gate-a1` (added at the A1 merge).
+  `gate-2`, `gate-a1`, `gate-a2` (added at the A2 merge).
 
 ## Repository state
 
 - `src/` — **the product**: C++ GDExtension (TressFX core + Godot RenderingDevice
   backend). Loads Ratboy `.tfx`/`.tfxbone`, simulates on the **main** RD (render-thread
-  dispatch, no submit/sync — since A1), draws debug guide lines from async readback.
+  dispatch, no submit/sync — since A1), renders lit/shadowed ribbon hair (since A2).
 - `Sconstruct` + `godot-cpp/` submodule — the build. `scons -Q` from repo root;
   Windows builds get unique timestamped DLL names and the manifest
   (`demo/bin/gdexample.gdextension`) is auto-repointed.
 - `demo/shaders/glsl/TressFXSimulation.*.comp.glsl` — the 6 audited GLSL kernels
   (crown jewels; shared by the C++ product and the GDScript harness).
+  `demo/shaders/glsl/TressFXPositionTexture.Copy.comp.glsl` — A2's GPU-to-GPU
+  position feed (also RenderingDevice compute GLSL, NOT a kernel).
+- `demo/shaders/hair_ribbon.gdshader` — the ribbon material (Godot's own shading
+  language, a completely different system from the `.comp.glsl` files above).
 - `demo/` — Godot 4.4 project: `main.tscn` is the F5 scene; it instances
   `babylon.tscn`, which contains the `TressFXCharacter` node (and its
   `gate_capture_mode` flag). `gdscript_hair.tscn` = validation harness. Ratboy assets.
+  `free_cam.gd` (F5 scene camera) and `orbit_light.gd` (on `pointLight1` in
+  `babylon.tscn`) are testing tools, not product — free-fly camera and an
+  auto-orbiting light, both added to make visual checks possible without
+  needing manual input every time.
 - `demo/addons/tressfx/` — GDScript validation harness (tfx_asset.gd,
   hair_simulator.gd, hair_sim_node.gd). Not shipped; keep working.
 - `thirdparty/tressfx/` — vendored AMD reference + `LICENSE.AMD-TressFX.txt`
@@ -120,58 +151,7 @@ heart; the C++ extension around them is the product.
 
 - **A1 — main-RD migration: DONE** (see "already done" above). Tag: `gate-a1`.
 
-- **A2 — visible hair.** Replace the debug guide lines with real rendered strands for
-  the FULL hair (guides + follow — `UpdateFollowHairVertices` already runs). The
-  rendering approach is DECIDED (do not reopen it): expand strands into camera-facing
-  ribbons drawn through Godot's standard 3D pipeline (gets lights and shadows for
-  free; MSAA + alpha-to-coverage, no TAA). AMD's ShortCut OIT is a possible later
-  upgrade, not part of A2. Positions flow GPU-to-GPU — the sim's positions buffer is
-  copied into an RGBA32F texture each frame and read in a Godot vertex shader via
-  `Texture2DRD` (the same mechanism the debug overlay already uses — see
-  `m_gpu_guide_lines_texture` in `src/tressfx_character.cpp`). NO CPU readback on the
-  render path. Subtasks, in order, each with its check:
-  Two DIFFERENT shader languages are involved — do not mix them up:
-  (a) RenderingDevice compute GLSL (`.comp.glsl`, like the kernels) for the A2.1 copy
-  pass; (b) Godot's own shading language (`.gdshader`, `shader_type spatial;`) for the
-  A2.2/A2.3 ribbon material. `Texture2DRD` is the bridge between the two worlds.
-  - **A2.1 — position texture.** After the sim dispatches in `_rt_sim_tick`, run a
-    small compute pass (new `.comp.glsl` file in `demo/shaders/glsl/`, NOT a kernel
-    change) copying all 143360 float4 positions into an RGBA32F texture. 512x512 =
-    262144 texels is enough at 1 texel per vertex; vertex v lives at texel
-    `(v % 512, v / 512)`. To create the texture and compile/dispatch the pass on the
-    main RD, copy the existing debug-overlay pattern (search "GuideLines" in
-    `src/GodotEngineInterfaceImpl.cpp` — it already creates a main-RD texture, wraps
-    it in `Texture2DRD`, and dispatches a compute pass on the render thread). Expose
-    the texture on TressFXCharacter as a `Texture2DRD` property. Check: maintainer
-    presses F5 with a debug TextureRect showing the texture — a colorful pattern that
-    changes as the hair moves.
-  - **A2.2 — ribbon mesh + vertex shader.** Build one static ArrayMesh: for each of
-    the 4480 strands, (vps-1)=31 segments x 2 triangles; vertices carry only
-    (global_vertex_index, side = -1 or +1) packed into `ARRAY_TEX_UV` (no real
-    positions — the vertex shader creates them). The `.gdshader` (spatial) vertex
-    shader does `texelFetch(position_tex, ivec2(v % 512, v / 512), 0)` for this
-    vertex and the next one on the strand, computes the tangent, and offsets the
-    vertex sideways perpendicular to the camera by the hair radius (`fiber_radius`,
-    default 0.0021, expose as a node property). Expansion-math reference: vendored
-    `TressFXStrands.hlsl` (GetExpandedTressFXVert). TWO PITFALLS, both mandatory:
-    (1) the ArrayMesh has garbage local positions, so Godot will frustum-cull it —
-    call `MeshInstance3D::set_custom_aabb` with a generous box, e.g. AABB((-2,-2,-2),
-    (4,4,4)) around the character (the old debug-lines mesh never needed this because
-    it carried real CPU positions; the ribbon mesh does not); (2) attach the
-    MeshInstance3D with the same parent/transform as
-    the existing GPU debug-lines mesh (see `refresh_gpu_debug_hair_lines_3d` in
-    `src/tressfx_character.cpp`) so sim-space positions land in the right place in
-    the world. Check: F5 shows the mohawk as solid ribbon geometry following the sim,
-    from every camera angle, no popping when orbiting the camera.
-  - **A2.3 — shading.** Fragment shader: base/tip color properties, Kajiya-Kay-style
-    anisotropic highlight (reference: vendored `TressFXLighting.hlsl`), alpha-to-
-    coverage for soft edges (`ALPHA_SCISSOR`/`ALPHA_ANTIALIASING_EDGE` in Godot),
-    shadows on (standard pipeline handles them). Check: F5 with a moving light —
-    highlight moves along strands, fur casts and receives shadows.
-  - **A2.4 — performance + gate.** Turn off the debug line mesh by default (keep the
-    property). Run the regression gate (box above). Check FPS.
-  **Gate A2:** Ratboy with full lit/shadowed fur at 1080p ≥ 60 FPS (maintainer reads
-  the FPS counter), and `compare_dump.py` green.
+- **A2 — visible hair: DONE** (see "already done" above). Tag: `gate-a2`.
 
 - **A3 — animation + collision.** Two independent halves; do them in this order.
   - **A3.1 — animation.** Play Ratboy's walk/idle animation (an `AnimationPlayer`
