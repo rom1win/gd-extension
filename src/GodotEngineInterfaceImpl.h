@@ -219,6 +219,18 @@ public:
     // Internal: render-thread task pulls the latest source under a mutex.
     bool PopGuideLinesSourceForRenderThread(godot::PackedByteArray& out_positions_vec4, godot::PackedByteArray& out_viewproj_mat4, int& out_vertices_per_strand, int& out_guide_strands);
 
+    // A2.1: GPU-to-GPU position feed for the ribbon renderer. Copies a hair
+    // object's simulated positions buffer (float4 per vertex) into a fixed
+    // 512x512 RGBA32F texture on the main RD; no CPU readback. RENDER THREAD
+    // ONLY (creates GPU resources lazily on first call). Call once per sim
+    // tick, right after the kernel dispatches, so the texture always reflects
+    // the latest simulated positions.
+    void DispatchPositionTextureCopy(godot::RID positions_buffer_rid, int vertex_count);
+
+    // Safe from any thread: reads a cached RID, does no RenderingDevice work.
+    // Invalid until the first DispatchPositionTextureCopy() call has run.
+    godot::RID GetPositionTextureRID() const;
+
     // Minimal submission hook (used by self-test and later by simulation/render integration).
     void EndAndSubmitCommandBuffer();
     

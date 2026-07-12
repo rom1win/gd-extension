@@ -108,6 +108,10 @@ void TressFXCharacter::_bind_methods() {
 
     // Keep as an explicit method for optional overlay viewers; do not expose as an inspector property.
     ClassDB::bind_method(D_METHOD("get_gpu_guide_lines_texture"), &TressFXCharacter::get_gpu_guide_lines_texture);
+
+    // A2.1: explicit method (not an inspector property) so a ShaderMaterial/
+    // debug viewer can fetch it via get_position_texture().
+    ClassDB::bind_method(D_METHOD("get_position_texture"), &TressFXCharacter::get_position_texture);
 }
 
 TressFXCharacter::TressFXCharacter() {}
@@ -364,6 +368,15 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
     if (!rd || !rid.is_valid()) {
         return;
     }
+
+    // A2.1: GPU-to-GPU feed for the ribbon renderer. Copies every simulated
+    // vertex (guides + follow hairs) into the position texture; no CPU
+    // readback on this path.
+    if (EI_Device* device = GetDevice()) {
+        const int vertex_count = ctx.hairStrands[0]->GetTotalStrandCount() * ctx.hairStrands[0]->GetVertsPerStrand();
+        device->DispatchPositionTextureCopy(rid, vertex_count);
+    }
+
     const Error err = rd->buffer_get_data_async(rid, callable_mp(this, &TressFXCharacter::_on_positions_async));
     static bool s_readback_logged = false;
     if (!s_readback_logged) {
@@ -1067,6 +1080,26 @@ godot::Ref<godot::Texture2DRD> TressFXCharacter::get_gpu_guide_lines_texture() {
     return m_gpu_guide_lines_texture;
 }
 
+godot::Ref<godot::Texture2DRD> TressFXCharacter::get_position_texture() {
+    EI_Device* device = GetDevice();
+    if (!device) {
+        return godot::Ref<godot::Texture2DRD>();
+    }
+
+    // Pure state read (no RenderingDevice work): safe to call from any thread.
+    // The texture itself is created/updated on the render thread by _rt_sim_tick.
+    const godot::RID tex = device->GetPositionTextureRID();
+    if (!tex.is_valid()) {
+        return godot::Ref<godot::Texture2DRD>();
+    }
+
+    if (!m_position_texture.is_valid()) {
+        m_position_texture.instantiate();
+    }
+    m_position_texture->set_texture_rd_rid(tex);
+    return m_position_texture;
+}
+
 void TressFXCharacter::update_process_state() {
     // We need processing when either:
     // - CPU debug is active (to keep transforms updated), OR
@@ -1101,6 +1134,10 @@ void TressFXCharacter::_notification(int what) {
         if (m_gpu_guide_lines_texture.is_valid()) {
             m_gpu_guide_lines_texture->set_texture_rd_rid(RID());
             m_gpu_guide_lines_texture.unref();
+        }
+        if (m_position_texture.is_valid()) {
+            m_position_texture->set_texture_rd_rid(RID());
+            m_position_texture.unref();
         }
 
         // Ensure debug nodes/materials are released before teardown.

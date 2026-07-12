@@ -88,6 +88,12 @@ public:
     // This is intended for debugging (TextureRect/Sprite3D/etc), not final hair rendering.
     godot::Ref<godot::Texture2DRD> get_gpu_guide_lines_texture();
 
+    // A2.1: main-RD position texture (512x512 RGBA32F). Texel (v % 512, v / 512)
+    // holds simulated hair vertex v as float4 (xyz used), updated every sim
+    // tick with no CPU readback. Feeds the A2.2 ribbon vertex shader. Invalid
+    // (unassigned RID) until GPU mode is active and at least one sim tick ran.
+    godot::Ref<godot::Texture2DRD> get_position_texture();
+
 private:
     std::vector<TressFXHairNode::TressFXObjectDescription> m_hairDescriptions;
     std::vector<TressFXHairNode::TressFXCollisionMeshDescription> m_collisionDescriptions;
@@ -204,6 +210,10 @@ private:
     uint64_t m_frame_index = 0;
 
     godot::Ref<godot::Texture2DRD> m_gpu_guide_lines_texture;
+
+    // A2.1: wrapper around the main-RD position texture RID (see EI_Device::
+    // GetPositionTextureRID). Lazily instantiated on first get_position_texture() call.
+    godot::Ref<godot::Texture2DRD> m_position_texture;
 };
 
 #endif // TRESSFX_CHARACTER_H

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://7cfvqwu1dro"
+path="res://.godot/imported/TressFXPositionTexture.Copy.comp.glsl-28fd60765a9f06fb08ca98ee171db1ad.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXPositionTexture.Copy.comp.glsl"
+dest_files=["res://.godot/imported/TressFXPositionTexture.Copy.comp.glsl-28fd60765a9f06fb08ca98ee171db1ad.res"]
+
+[params]
+

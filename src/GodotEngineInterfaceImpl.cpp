@@ -82,8 +82,9 @@ static void safe_free_framebuffer(RenderingDevice* rd, RID& rid) {
 static EI_Device* g_device_singleton = nullptr;
 static bool g_is_shutting_down = false;
 
-// Forward declaration: defined later in this file.
+// Forward declarations: defined later in this file.
 static void cleanup_main_rd_guidelines_on_render_thread();
+static void cleanup_main_rd_position_texture_on_render_thread();
 
 EI_Device* GetDevice() {
     return g_device_singleton;
@@ -112,6 +113,7 @@ void ShutdownGodotEngineInterface() {
     // Must be scheduled on the render thread.
     if (RenderingServer* rs = RenderingServer::get_singleton()) {
         rs->call_on_render_thread(callable_mp_static(&cleanup_main_rd_guidelines_on_render_thread));
+        rs->call_on_render_thread(callable_mp_static(&cleanup_main_rd_position_texture_on_render_thread));
         // Try to ensure the render-thread callback runs before shutdown progresses.
         rs->force_sync();
     }
@@ -1631,6 +1633,171 @@ void EI_Device::RunMainRDImageSelfTestOnce() {
     rs->call_on_render_thread(callable_mp_static(&run_main_rd_image_self_test_on_render_thread));
 }
 
+// --- Position texture feed for the ribbon renderer (main RD, A2.1) -----------
+// GPU-to-GPU bridge: copies a hair object's simulated positions storage buffer
+// into a fixed 512x512 RGBA32F texture every sim tick, no CPU readback. A
+// Godot spatial shader (A2.2+) reads it via Texture2DRD + texelFetch().
+
+// Forward declaration: defined further down in this file (guide-lines section).
+static Ref<RDShaderSPIRV> compile_spirv_from_glsl_compute(RenderingDevice* rd, const String& cs_path);
+
+struct MainRDPositionTextureState {
+    godot::RenderingDevice* rd = nullptr;
+    uint64_t rd_instance_id = 0;
+
+    godot::RID texture;
+    uint32_t width = 512;
+    uint32_t height = 512;
+
+    godot::RID compute_shader;
+    godot::RID compute_pipeline;
+
+    // Uniform set binds a specific positions-buffer RID; rebuilt if that RID changes.
+    godot::RID uniform_set;
+    godot::RID bound_positions_buffer;
+
+    bool active = false;
+};
+
+static MainRDPositionTextureState* g_main_rd_position_texture = nullptr;
+
+static MainRDPositionTextureState& get_main_rd_position_texture_state() {
+    if (!g_main_rd_position_texture) {
+        g_main_rd_position_texture = new MainRDPositionTextureState();
+    }
+    return *g_main_rd_position_texture;
+}
+
+static void cleanup_main_rd_position_texture_on_render_thread() {
+    MainRDPositionTextureState& st = get_main_rd_position_texture_state();
+    if (g_is_shutting_down) {
+        *g_main_rd_position_texture = MainRDPositionTextureState{};
+        return;
+    }
+    RenderingDevice* rd = get_valid_rd_from_instance_id(st.rd_instance_id);
+    if (!rd) {
+        *g_main_rd_position_texture = MainRDPositionTextureState{};
+        return;
+    }
+
+    safe_free_uniform_set(rd, st.uniform_set);
+    safe_free_pipeline(rd, st.compute_pipeline);
+    if (st.compute_shader.is_valid()) {
+        rd->free_rid(st.compute_shader);
+    }
+    safe_free_texture(rd, st.texture);
+
+    *g_main_rd_position_texture = MainRDPositionTextureState{};
+}
+
+// Creates the texture + compute pipeline once; cheap no-op on later calls.
+static void ensure_main_rd_position_texture_resources(RenderingDevice* rd) {
+    MainRDPositionTextureState& st = get_main_rd_position_texture_state();
+    if (st.active && st.rd == rd && st.texture.is_valid() && st.compute_pipeline.is_valid()) {
+        return;
+    }
+
+    cleanup_main_rd_position_texture_on_render_thread();
+    st = MainRDPositionTextureState{};
+    st.rd = rd;
+    st.rd_instance_id = rd ? rd->get_instance_id() : 0;
+
+    Ref<RDTextureFormat> fmt;
+    fmt.instantiate();
+    fmt->set_width(st.width);
+    fmt->set_height(st.height);
+    fmt->set_depth(1);
+    fmt->set_array_layers(1);
+    fmt->set_mipmaps(1);
+    fmt->set_texture_type(RenderingDevice::TEXTURE_TYPE_2D);
+    fmt->set_samples(RenderingDevice::TEXTURE_SAMPLES_1);
+    fmt->set_format(RenderingDevice::DATA_FORMAT_R32G32B32A32_SFLOAT);
+    fmt->set_usage_bits(
+        RenderingDevice::TEXTURE_USAGE_STORAGE_BIT |
+        RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
+        RenderingDevice::TEXTURE_USAGE_CAN_UPDATE_BIT |
+        RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
+        RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT);
+
+    Ref<RDTextureView> view;
+    view.instantiate();
+    st.texture = rd->texture_create(fmt, view);
+    if (!st.texture.is_valid()) {
+        UtilityFunctions::push_warning("PositionTexture: texture_create failed");
+        return;
+    }
+    rd->set_resource_name(st.texture, "tressfx_position_texture");
+
+    const String cs_path = "res://shaders/glsl/TressFXPositionTexture.Copy.comp.glsl";
+    Ref<RDShaderSPIRV> spirv = compile_spirv_from_glsl_compute(rd, cs_path);
+    if (!spirv.is_valid()) {
+        UtilityFunctions::push_warning(String("PositionTexture: missing/failed compute shader: ") + cs_path);
+        return;
+    }
+    st.compute_shader = rd->shader_create_from_spirv(spirv, "tressfx_position_texture_copy_shader");
+    st.compute_pipeline = rd->compute_pipeline_create(st.compute_shader);
+    if (!st.compute_pipeline.is_valid()) {
+        UtilityFunctions::push_warning("PositionTexture: compute_pipeline_create failed");
+        return;
+    }
+
+    st.active = true;
+}
+
+// (Re)binds the uniform set when the source positions-buffer RID changes,
+// then dispatches the copy. Render thread only; never submit()/sync().
+static void dispatch_main_rd_position_texture_copy(RenderingDevice* rd, godot::RID positions_buffer_rid, int vertex_count) {
+    MainRDPositionTextureState& st = get_main_rd_position_texture_state();
+    if (!st.active || !rd || !positions_buffer_rid.is_valid() || vertex_count <= 0) {
+        return;
+    }
+
+    if (!st.uniform_set.is_valid() || st.bound_positions_buffer != positions_buffer_rid) {
+        safe_free_uniform_set(rd, st.uniform_set);
+
+        Ref<RDUniform> u0;
+        u0.instantiate();
+        u0->set_uniform_type(RenderingDevice::UNIFORM_TYPE_STORAGE_BUFFER);
+        u0->set_binding(0);
+        u0->add_id(positions_buffer_rid);
+
+        Ref<RDUniform> u1;
+        u1.instantiate();
+        u1->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+        u1->set_binding(1);
+        u1->add_id(st.texture);
+
+        TypedArray<RDUniform> uniforms;
+        uniforms.push_back(u0);
+        uniforms.push_back(u1);
+        st.uniform_set = rd->uniform_set_create(uniforms, st.compute_shader, 0);
+        if (!st.uniform_set.is_valid()) {
+            UtilityFunctions::push_warning("PositionTexture: uniform_set_create failed");
+            return;
+        }
+        st.bound_positions_buffer = positions_buffer_rid;
+    }
+
+    PackedByteArray pc;
+    pc.resize(16);
+    uint32_t* pcu = reinterpret_cast<uint32_t*>(pc.ptrw());
+    pcu[0] = (uint32_t)vertex_count;
+    pcu[1] = st.width;
+    pcu[2] = 0;
+    pcu[3] = 0;
+
+    const int64_t cl = rd->compute_list_begin();
+    rd->compute_list_bind_compute_pipeline(cl, st.compute_pipeline);
+    rd->compute_list_bind_uniform_set(cl, st.uniform_set, 0);
+    rd->compute_list_set_push_constant(cl, pc, 16);
+
+    const uint32_t local_size = 256;
+    const uint32_t groups = ((uint32_t)vertex_count + local_size - 1) / local_size;
+    rd->compute_list_dispatch(cl, groups, 1, 1);
+    rd->compute_list_add_barrier(cl);
+    rd->compute_list_end();
+}
+
 // --- Minimal guide-line render path (main RD) ---------------------------------
 
 struct MainRDGuideLinesState {
@@ -2184,4 +2351,17 @@ void EI_Device::RunMainRDGuideLinesOnce() {
 godot::RID EI_Device::GetMainRDGuideLinesTextureRID() const {
     MainRDGuideLinesState& st = get_main_rd_guidelines_state();
     return st.color_tex;
+}
+
+void EI_Device::DispatchPositionTextureCopy(godot::RID positions_buffer_rid, int vertex_count) {
+    RenderingDevice* rd = GetLocalRenderingDevice();
+    if (!rd) {
+        return;
+    }
+    ensure_main_rd_position_texture_resources(rd);
+    dispatch_main_rd_position_texture_copy(rd, positions_buffer_rid, vertex_count);
+}
+
+godot::RID EI_Device::GetPositionTextureRID() const {
+    return get_main_rd_position_texture_state().texture;
 }
