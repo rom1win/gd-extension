@@ -1,4 +1,4 @@
-[gd_scene load_steps=52 format=4 uid="uid://jaaxkayekveb"]
+[gd_scene load_steps=53 format=4 uid="uid://jaaxkayekveb"]
 
 [ext_resource type="Texture2D" uid="uid://dokofnbqtilbh" path="res://Meshes/RatBoy/explodedBase_basics_BaseColor.png" id="1_j1lhe"]
 [ext_resource type="Texture2D" uid="uid://3ly42ha3apkh" path="res://Meshes/RatBoy/file32file31.jpg" id="2_73rgm"]
@@ -29,6 +29,7 @@
 [ext_resource type="Texture2D" uid="uid://2bpjca1d1fsx" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_BaseColor.png" id="27_25y0n"]
 [ext_resource type="Texture2D" uid="uid://c2xrkp8uottdp" path="res://Meshes/RatBoy/file12file10.jpg" id="28_aekav"]
 [ext_resource type="Texture2D" uid="uid://bqmtsrgtgtvsc" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_Normal.png" id="29_in2tx"]
+[ext_resource type="Script" path="res://orbit_light.gd" id="30_orbitlight"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_mu3m0"]
 resource_name = "Floor"
@@ -935,6 +936,7 @@ skeleton = NodePath("")
 transform = Transform3D(3.26726, 2.97207, 2.95362, -3.42905, -0.255925, 4.0507, 2.40805, -4.39697, 1.76069, 1.24844, 2.18094, 1.27137)
 light_color = Color(1, 0.997188, 0.96259, 1)
 light_energy = 3.0
+shadow_enabled = true
 spot_range = 10.0
 spot_angle = 24.3989
 spot_angle_attenuation = 0.1
@@ -942,12 +944,15 @@ spot_angle_attenuation = 0.1
 [node name="pointLight1" type="OmniLight3D" parent="."]
 transform = Transform3D(-0.0921246, -8.05379e-09, 0, 8.05379e-09, -0.0921246, 0, 0, 0, -0.0921246, 0, 0.807732, 2)
 light_energy = 2.0
+shadow_enabled = true
 omni_range = 10.0
+script = ExtResource("30_orbitlight")
 
 [node name="SlimeLight" type="OmniLight3D" parent="."]
 transform = Transform3D(0.00999999, 0, 0, 0, 0.00999999, 0, 0, 0, 0.00999999, -0.440336, 0.215202, 1.82161)
 light_color = Color(0.600987, 1, 0.480007, 1)
 light_energy = 9.0
+shadow_enabled = true
 omni_range = 0.5
 
 [node name="RatboyNode" type="Node3D" parent="."]
@@ -1708,7 +1713,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.551654, 0.284321)
 shape = SubResource("CapsuleShape3D_j1lhe")
 
 [node name="TressFXCharacter" type="TressFXCharacter" parent="."]
-gate_capture_mode = false
 
 [node name="Collision_body" type="TressFXCollisionNode" parent="TressFXCharacter"]
 tfx_mesh_file = "res://Meshes/HairAsset/Ratboy/Ratboy_body.tfxmesh"

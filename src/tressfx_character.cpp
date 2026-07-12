@@ -82,6 +82,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_debug_hair_yaw_degrees"), &TressFXCharacter::get_debug_hair_yaw_degrees);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "debug_hair_yaw_degrees", PROPERTY_HINT_RANGE, "-180,180,0.1"), "set_debug_hair_yaw_degrees", "get_debug_hair_yaw_degrees");
 
+    ClassDB::bind_method(D_METHOD("set_show_gpu_debug_lines", "enabled"), &TressFXCharacter::set_show_gpu_debug_lines);
+    ClassDB::bind_method(D_METHOD("get_show_gpu_debug_lines"), &TressFXCharacter::get_show_gpu_debug_lines);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_gpu_debug_lines"), "set_show_gpu_debug_lines", "get_show_gpu_debug_lines");
+
     ClassDB::bind_method(D_METHOD("set_wind_velocity", "wind_velocity"), &TressFXCharacter::set_wind_velocity);
     ClassDB::bind_method(D_METHOD("get_wind_velocity"), &TressFXCharacter::get_wind_velocity);
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "wind_velocity"), "set_wind_velocity", "get_wind_velocity");
@@ -113,6 +117,14 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_hair_fiber_radius", "v"), &TressFXCharacter::set_hair_fiber_radius);
     ClassDB::bind_method(D_METHOD("get_hair_fiber_radius"), &TressFXCharacter::get_hair_fiber_radius);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "hair_fiber_radius", PROPERTY_HINT_RANGE, "0.0001,0.02,0.0001"), "set_hair_fiber_radius", "get_hair_fiber_radius");
+
+    ClassDB::bind_method(D_METHOD("set_hair_root_color", "c"), &TressFXCharacter::set_hair_root_color);
+    ClassDB::bind_method(D_METHOD("get_hair_root_color"), &TressFXCharacter::get_hair_root_color);
+    ADD_PROPERTY(PropertyInfo(Variant::COLOR, "hair_root_color"), "set_hair_root_color", "get_hair_root_color");
+
+    ClassDB::bind_method(D_METHOD("set_hair_tip_color", "c"), &TressFXCharacter::set_hair_tip_color);
+    ClassDB::bind_method(D_METHOD("get_hair_tip_color"), &TressFXCharacter::get_hair_tip_color);
+    ADD_PROPERTY(PropertyInfo(Variant::COLOR, "hair_tip_color"), "set_hair_tip_color", "get_hair_tip_color");
 
     ClassDB::bind_method(D_METHOD("rebuild_cpu_debug_visuals"), &TressFXCharacter::rebuild_cpu_debug_visuals);
 
@@ -712,6 +724,17 @@ double TressFXCharacter::get_debug_hair_yaw_degrees() const {
     return m_debug_hair_yaw_degrees;
 }
 
+void TressFXCharacter::set_show_gpu_debug_lines(bool enabled) {
+    m_show_gpu_debug_lines = enabled;
+    if (m_gpu_debug_line_instance) {
+        m_gpu_debug_line_instance->set_visible(enabled);
+    }
+}
+
+bool TressFXCharacter::get_show_gpu_debug_lines() const {
+    return m_show_gpu_debug_lines;
+}
+
 void TressFXCharacter::set_gate_capture_mode(bool enabled) {
     m_gate_capture_mode = enabled;
 }
@@ -750,6 +773,22 @@ void TressFXCharacter::set_hair_fiber_radius(float v) {
     }
 }
 float TressFXCharacter::get_hair_fiber_radius() const { return m_hair_fiber_radius; }
+
+void TressFXCharacter::set_hair_root_color(const godot::Color& c) {
+    m_hair_root_color = c;
+    if (m_gpu_ribbon_material.is_valid()) {
+        m_gpu_ribbon_material->set_shader_parameter("root_color", Vector3(c.r, c.g, c.b));
+    }
+}
+godot::Color TressFXCharacter::get_hair_root_color() const { return m_hair_root_color; }
+
+void TressFXCharacter::set_hair_tip_color(const godot::Color& c) {
+    m_hair_tip_color = c;
+    if (m_gpu_ribbon_material.is_valid()) {
+        m_gpu_ribbon_material->set_shader_parameter("tip_color", Vector3(c.r, c.g, c.b));
+    }
+}
+godot::Color TressFXCharacter::get_hair_tip_color() const { return m_hair_tip_color; }
 
 void TressFXCharacter::rebuild_cpu_debug_visuals() {
     // Intended for editor usage via a @tool script.
@@ -879,6 +918,9 @@ void TressFXCharacter::refresh_gpu_debug_hair_lines_3d() {
     mat->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
     mat->set_albedo(Color(0.2f, 0.9f, 1.0f));
     mi->set_material_override(mat);
+    // A2.4: the ribbon renderer is the real visual now; keep this hidden
+    // unless explicitly re-enabled via the show_gpu_debug_lines property.
+    mi->set_visible(m_show_gpu_debug_lines);
 
     debug_root->add_child(mi);
     m_gpu_debug_line_instance = mi;
@@ -897,6 +939,8 @@ void TressFXCharacter::refresh_gpu_debug_hair_lines_3d() {
             }
             m_gpu_ribbon_material->set_shader_parameter("vertices_per_strand", m_hairStrands[0]->GetVertsPerStrand());
             m_gpu_ribbon_material->set_shader_parameter("fiber_radius", m_hair_fiber_radius);
+            m_gpu_ribbon_material->set_shader_parameter("root_color", Vector3(m_hair_root_color.r, m_hair_root_color.g, m_hair_root_color.b));
+            m_gpu_ribbon_material->set_shader_parameter("tip_color", Vector3(m_hair_tip_color.r, m_hair_tip_color.g, m_hair_tip_color.b));
         }
 
         MeshInstance3D* ribbon_mi = memnew(MeshInstance3D);

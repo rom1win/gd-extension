@@ -9,6 +9,7 @@
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
@@ -66,6 +67,12 @@ public:
     void set_debug_hair_yaw_degrees(double degrees);
     double get_debug_hair_yaw_degrees() const;
 
+    // A2.4: the blue in-world GPU debug line overlay is off by default now
+    // that the ribbon renderer (A2.2/A2.3) is the real visual; kept as a
+    // property so it can still be re-enabled for troubleshooting.
+    void set_show_gpu_debug_lines(bool enabled);
+    bool get_show_gpu_debug_lines() const;
+
     void set_wind_velocity(const godot::Vector3& wind_velocity);
     godot::Vector3 get_wind_velocity() const;
 
@@ -84,6 +91,10 @@ public:
 
     // A2.2: ribbon half-width in meters (TressFX FiberRadius convention).
     void set_hair_fiber_radius(float v); float get_hair_fiber_radius() const;
+
+    // A2.3: hair color at the root and at the tip (blended along each strand).
+    void set_hair_root_color(const godot::Color& c); godot::Color get_hair_root_color() const;
+    void set_hair_tip_color(const godot::Color& c);  godot::Color get_hair_tip_color() const;
 
     // Editor helper: rebuild CPU debug line meshes (safe in editor; no RenderingDevice usage).
     void rebuild_cpu_debug_visuals();
@@ -166,6 +177,9 @@ private:
     godot::Ref<godot::ArrayMesh> m_gpu_ribbon_mesh;
     godot::Ref<godot::ShaderMaterial> m_gpu_ribbon_material;
     float m_hair_fiber_radius = 0.0021f;
+    godot::Color m_hair_root_color = godot::Color(0.25f, 0.12f, 0.06f);
+    godot::Color m_hair_tip_color  = godot::Color(0.55f, 0.35f, 0.18f);
+    bool m_show_gpu_debug_lines = false;
 
     void build_ribbon_mesh_if_needed();
 
