@@ -30,6 +30,7 @@ class Node;
 class Node3D;
 class BoneAttachment3D;
 class ArrayMesh;
+class ShaderMaterial;
 }
 
 class TressFXCharacter : public Node3D {
@@ -80,6 +81,9 @@ public:
     void set_global_stiffness(float v);  float get_global_stiffness() const;
     void set_global_range(float v);      float get_global_range() const;
     void set_local_stiffness(float v);   float get_local_stiffness() const;
+
+    // A2.2: ribbon half-width in meters (TressFX FiberRadius convention).
+    void set_hair_fiber_radius(float v); float get_hair_fiber_radius() const;
 
     // Editor helper: rebuild CPU debug line meshes (safe in editor; no RenderingDevice usage).
     void rebuild_cpu_debug_visuals();
@@ -153,6 +157,17 @@ private:
     godot::Node3D* m_gpu_debug_root = nullptr;
     godot::BoneAttachment3D* m_gpu_debug_anchor = nullptr;
     godot::Ref<godot::ArrayMesh> m_gpu_debug_lines_mesh;
+
+    // A2.2: ribbon-expanded hair geometry. Shares m_gpu_debug_root's transform
+    // (same bone-follow parenting as the debug lines) so its mesh-local-space
+    // vertices, computed straight from the A2.1 position texture with no CPU
+    // involvement, land in the right place in the world.
+    godot::MeshInstance3D* m_gpu_ribbon_instance = nullptr;
+    godot::Ref<godot::ArrayMesh> m_gpu_ribbon_mesh;
+    godot::Ref<godot::ShaderMaterial> m_gpu_ribbon_material;
+    float m_hair_fiber_radius = 0.0021f;
+
+    void build_ribbon_mesh_if_needed();
 
     // Cached from the collision configuration so debug lines can follow animation.
     godot::Skeleton3D* m_debug_skeleton = nullptr;

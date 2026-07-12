@@ -17,6 +17,12 @@
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/variant/callable_method_pointer.hpp>
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
+#include <godot_cpp/variant/aabb.hpp>
 #include "tressfx_collision_node.h"
 #include "EngineInterface.h"
 #include "Simulation.h"
@@ -103,6 +109,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_local_stiffness", "v"), &TressFXCharacter::set_local_stiffness);
     ClassDB::bind_method(D_METHOD("get_local_stiffness"), &TressFXCharacter::get_local_stiffness);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "local_stiffness", PROPERTY_HINT_RANGE, "0.0,1.0,0.001"), "set_local_stiffness", "get_local_stiffness");
+
+    ClassDB::bind_method(D_METHOD("set_hair_fiber_radius", "v"), &TressFXCharacter::set_hair_fiber_radius);
+    ClassDB::bind_method(D_METHOD("get_hair_fiber_radius"), &TressFXCharacter::get_hair_fiber_radius);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "hair_fiber_radius", PROPERTY_HINT_RANGE, "0.0001,0.02,0.0001"), "set_hair_fiber_radius", "get_hair_fiber_radius");
 
     ClassDB::bind_method(D_METHOD("rebuild_cpu_debug_visuals"), &TressFXCharacter::rebuild_cpu_debug_visuals);
 
@@ -292,6 +302,17 @@ void TressFXCharacter::_process(double delta) {
 
             refresh_gpu_debug_hair_lines_3d();
             update_gpu_debug_hair_lines_3d_mesh(pos_bytes, vps, guides);
+        }
+    }
+
+    // A2.2: keep the ribbon material's texture parameter pointed at the current
+    // position texture. Cheap (state read only, no RenderingDevice work) --
+    // needed because the texture RID may not exist yet the first time the
+    // material is created (before the first sim tick has run).
+    if (m_gpu_ribbon_material.is_valid()) {
+        Ref<Texture2DRD> tex = get_position_texture();
+        if (tex.is_valid()) {
+            m_gpu_ribbon_material->set_shader_parameter("position_tex", tex);
         }
     }
 
@@ -722,6 +743,14 @@ float TressFXCharacter::get_global_range() const { return m_global_range; }
 void TressFXCharacter::set_local_stiffness(float v) { m_local_stiffness = v; }
 float TressFXCharacter::get_local_stiffness() const { return m_local_stiffness; }
 
+void TressFXCharacter::set_hair_fiber_radius(float v) {
+    m_hair_fiber_radius = v;
+    if (m_gpu_ribbon_material.is_valid()) {
+        m_gpu_ribbon_material->set_shader_parameter("fiber_radius", m_hair_fiber_radius);
+    }
+}
+float TressFXCharacter::get_hair_fiber_radius() const { return m_hair_fiber_radius; }
+
 void TressFXCharacter::rebuild_cpu_debug_visuals() {
     // Intended for editor usage via a @tool script.
     // Safe: only builds CPU-side meshes and Node3D children.
@@ -853,6 +882,35 @@ void TressFXCharacter::refresh_gpu_debug_hair_lines_3d() {
 
     debug_root->add_child(mi);
     m_gpu_debug_line_instance = mi;
+
+    // A2.2: ribbon-expanded hair geometry, parented the same way so it follows
+    // the same bone-anchored transform as the debug lines above.
+    build_ribbon_mesh_if_needed();
+    if (m_gpu_ribbon_mesh.is_valid()) {
+        if (!m_gpu_ribbon_material.is_valid()) {
+            m_gpu_ribbon_material.instantiate();
+            Ref<Shader> shader = ResourceLoader::get_singleton()->load("res://shaders/hair_ribbon.gdshader");
+            if (shader.is_valid()) {
+                m_gpu_ribbon_material->set_shader(shader);
+            } else {
+                UtilityFunctions::push_warning("TressFXCharacter: failed to load res://shaders/hair_ribbon.gdshader");
+            }
+            m_gpu_ribbon_material->set_shader_parameter("vertices_per_strand", m_hairStrands[0]->GetVertsPerStrand());
+            m_gpu_ribbon_material->set_shader_parameter("fiber_radius", m_hair_fiber_radius);
+        }
+
+        MeshInstance3D* ribbon_mi = memnew(MeshInstance3D);
+        ribbon_mi->set_name("TressFXGPURibbon_0");
+        ribbon_mi->set_mesh(m_gpu_ribbon_mesh);
+        ribbon_mi->set_material_override(m_gpu_ribbon_material);
+        // The mesh's "vertex" positions are placeholders overwritten entirely by
+        // the vertex shader from the position texture, so Godot's automatic AABB
+        // (derived from those placeholders) is meaningless -- without this, the
+        // ribbons vanish whenever the placeholder-derived bounds leave the frustum.
+        ribbon_mi->set_custom_aabb(AABB(Vector3(-2, -2, -2), Vector3(4, 4, 4)));
+        debug_root->add_child(ribbon_mi);
+        m_gpu_ribbon_instance = ribbon_mi;
+    }
 }
 
 void TressFXCharacter::clear_gpu_debug_hair_lines_3d() {
@@ -860,6 +918,12 @@ void TressFXCharacter::clear_gpu_debug_hair_lines_3d() {
     m_gpu_debug_lines_mesh.unref();
     m_gpu_debug_root = nullptr;
     m_gpu_debug_anchor = nullptr;
+
+    // The ribbon MeshInstance3D is a child of debug_root and gets freed by the
+    // node-removal loop below; just drop our references to it.
+    m_gpu_ribbon_instance = nullptr;
+    m_gpu_ribbon_mesh.unref();
+    m_gpu_ribbon_material.unref();
 
     // 1) Remove any GPU debug meshes attached directly under the character.
     for (int i = get_child_count() - 1; i >= 0; --i) {
@@ -965,6 +1029,68 @@ void TressFXCharacter::update_gpu_debug_hair_lines_3d_mesh(const godot::PackedBy
 
     m_gpu_debug_lines_mesh->clear_surfaces();
     m_gpu_debug_lines_mesh->add_surface_from_arrays(godot::Mesh::PRIMITIVE_LINES, arrays);
+}
+
+void TressFXCharacter::build_ribbon_mesh_if_needed() {
+    // A2.2: static topology only -- no real positions here. Every vertex only
+    // carries (global_vertex_index, side), packed into UV; the vertex shader
+    // looks up the actual position from the A2.1 position texture every frame.
+    // Built once per loaded asset (strand/vertex counts don't change at runtime).
+    if (m_gpu_ribbon_mesh.is_valid() || m_hairStrands.empty() || !m_hairStrands[0]) {
+        return;
+    }
+
+    HairStrands* h = m_hairStrands[0].get();
+    const int vps = h->GetVertsPerStrand();
+    const int total_strands = h->GetTotalStrandCount();
+    if (vps < 2 || total_strands <= 0) {
+        return;
+    }
+
+    const int segments_per_strand = vps - 1;
+    const int64_t quad_count = (int64_t)total_strands * (int64_t)segments_per_strand;
+    const int64_t vertex_count = quad_count * 4;
+    const int64_t index_count = quad_count * 6;
+
+    godot::PackedVector3Array placeholder_positions; // zero-filled; overwritten by the vertex shader
+    placeholder_positions.resize(vertex_count);
+    godot::PackedVector2Array vertex_uv; // x = global vertex index, y = side (0 -> -1, 1 -> +1)
+    vertex_uv.resize(vertex_count);
+    godot::PackedInt32Array indices;
+    indices.resize(index_count);
+
+    int64_t vi = 0;
+    int64_t ii = 0;
+    for (int s = 0; s < total_strands; ++s) {
+        const int strand_base = s * vps;
+        for (int local = 0; local < segments_per_strand; ++local) {
+            const int v0 = strand_base + local;
+            const int v1 = strand_base + local + 1;
+
+            const int32_t quad_base = (int32_t)vi;
+            vertex_uv[vi++] = godot::Vector2((float)v0, 0.0f); // A: v0, side -1
+            vertex_uv[vi++] = godot::Vector2((float)v0, 1.0f); // B: v0, side +1
+            vertex_uv[vi++] = godot::Vector2((float)v1, 0.0f); // C: v1, side -1
+            vertex_uv[vi++] = godot::Vector2((float)v1, 1.0f); // D: v1, side +1
+
+            // Quad ABDC split along the B-C diagonal.
+            indices[ii++] = quad_base + 0;
+            indices[ii++] = quad_base + 1;
+            indices[ii++] = quad_base + 2;
+            indices[ii++] = quad_base + 2;
+            indices[ii++] = quad_base + 1;
+            indices[ii++] = quad_base + 3;
+        }
+    }
+
+    godot::Array arrays;
+    arrays.resize(godot::Mesh::ARRAY_MAX);
+    arrays[godot::Mesh::ARRAY_VERTEX] = placeholder_positions;
+    arrays[godot::Mesh::ARRAY_TEX_UV] = vertex_uv;
+    arrays[godot::Mesh::ARRAY_INDEX] = indices;
+
+    m_gpu_ribbon_mesh.instantiate();
+    m_gpu_ribbon_mesh->add_surface_from_arrays(godot::Mesh::PRIMITIVE_TRIANGLES, arrays);
 }
 
 void TressFXCharacter::clear_debug_hair_lines() {
