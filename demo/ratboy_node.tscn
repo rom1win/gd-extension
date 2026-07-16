@@ -1,9 +1,10 @@
-[gd_scene load_steps=10 format=4 uid="uid://g11o8p2uu6sd"]
+[gd_scene load_steps=11 format=4 uid="uid://g11o8p2uu6sd"]
 
 [ext_resource type="Texture2D" uid="uid://oaapi8wtmemy" path="res://Meshes/RatBoy/Eye_diff.png" id="1_07qry"]
 [ext_resource type="Texture2D" uid="uid://2bpjca1d1fsx" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_BaseColor.png" id="2_i5nst"]
 [ext_resource type="Texture2D" uid="uid://c2xrkp8uottdp" path="res://Meshes/RatBoy/file12file10.jpg" id="3_4x01d"]
 [ext_resource type="Texture2D" uid="uid://bqmtsrgtgtvsc" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_Normal.png" id="4_lx4lo"]
+[ext_resource type="Script" uid="uid://ho3f8wt3fpyp" path="res://head_shake.gd" id="5_headshake"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_nky7r"]
 resource_name = "ratboy_SHAVE:Ratboy_Eyes_MAT1"
@@ -391,7 +392,6 @@ height = 1.0725
 [node name="CharacterBody3D" type="CharacterBody3D" parent="."]
 
 [node name="Skeleton3D" type="Skeleton3D" parent="CharacterBody3D"]
-transform = Transform3D(-4.37114e-08, 0, -1, 0, 1, 0, 1, 0, -4.37114e-08, 0, 0, 0)
 bones/0/name = "group1"
 bones/0/parent = -1
 bones/0/rest = Transform3D(0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.01, 0, 0, 0)
@@ -403,7 +403,7 @@ bones/1/name = "frenchHornMonster_root_JNT"
 bones/1/parent = 0
 bones/1/rest = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 23.9452, 5.35898)
 bones/1/enabled = true
-bones/1/position = Vector3(0, 26.466, 0)
+bones/1/position = Vector3(-18.9679, 26.4658, 27.6925)
 bones/1/rotation = Quaternion(-0.0190706, 0.552245, 0.0231604, 0.833142)
 bones/1/scale = Vector3(1, 1, 1)
 bones/2/name = "frenchHornMonster_spine01_JNT"
@@ -1134,27 +1134,25 @@ bones/105/enabled = true
 bones/105/position = Vector3(9.40916, -0.159764, -1.66656e-14)
 bones/105/rotation = Quaternion(0, 0, -0.0147434, 0.999891)
 bones/105/scale = Vector3(1, 1, 1)
+script = ExtResource("5_headshake")
 
 [node name="Ratboy" type="MeshInstance3D" parent="CharacterBody3D/Skeleton3D"]
-gi_mode = 2
 mesh = SubResource("ArrayMesh_8jmkf")
 skin = SubResource("Skin_qseu4")
 
-[node name="TressFXCharacter" type="TressFXCharacter" parent="CharacterBody3D"]
-transform = Transform3D(-4.37114e-08, 0, 1, 0, 1, 0, -1, 0, -4.37114e-08, 0, 0, 0)
+[node name="CollisionShape3D" type="CollisionShape3D" parent="CharacterBody3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.551654, 0.284321)
+shape = SubResource("CapsuleShape3D_j1lhe")
 
-[node name="TressFXCollisionNode" type="TressFXCollisionNode" parent="CharacterBody3D/TressFXCharacter"]
+[node name="TressFXCharacter" type="TressFXCharacter" parent="."]
+
+[node name="Collision_body" type="TressFXCollisionNode" parent="TressFXCharacter"]
 tfx_mesh_file = "res://Meshes/HairAsset/Ratboy/Ratboy_body.tfxmesh"
-skeleton_node_path = NodePath("../../Skeleton3D")
+skeleton_node_path = NodePath("../../CharacterBody3D/Skeleton3D")
 numCellsInXAxis = 50
 followBone = "frenchHornMonster_root_JNT"
 
-[node name="TressFXHairNode" type="TressFXHairNode" parent="CharacterBody3D/TressFXCharacter"]
+[node name="Hair_mohawk" type="TressFXHairNode" parent="TressFXCharacter"]
 tfx_file = "res://Meshes/HairAsset/Ratboy/Ratboy_mohawk.tfx"
 tfx_bone_file = "res://Meshes/HairAsset/Ratboy/Ratboy_mohawk.tfxbone"
-hair_object_name = "tressfx_mohawk"
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="CharacterBody3D"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.552, 0)
-visible = false
-shape = SubResource("CapsuleShape3D_j1lhe")
+hair_object_name = "mohawk_hair"
