@@ -22,8 +22,7 @@ environment = SubResource("Environment_ig7tw")
 
 [node name="GuideLinesViewer" type="CanvasLayer" parent="."]
 script = ExtResource("2_guides")
-character_path = NodePath("../babylon/RatboyNode/CharacterBody3D/TressFXCharacter")
-show_overlay = true
+character_path = NodePath("../babylon/TressFXCharacter")
 
 [node name="TextureRect" type="TextureRect" parent="GuideLinesViewer"]
 offset_left = 8.0

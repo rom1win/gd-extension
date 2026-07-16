@@ -33,6 +33,9 @@ void TressFXHairNode::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_tip_separation", "p"), &TressFXHairNode::set_tip_separation);
     ClassDB::bind_method(D_METHOD("get_tip_separation"), &TressFXHairNode::get_tip_separation);
 
+    ClassDB::bind_method(D_METHOD("set_follow_hair_radius", "p"), &TressFXHairNode::set_follow_hair_radius);
+    ClassDB::bind_method(D_METHOD("get_follow_hair_radius"), &TressFXHairNode::get_follow_hair_radius);
+
     // Properties
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_file", PROPERTY_HINT_FILE, "*.tfx,*.tfxbone"), "set_tfx_file", "get_tfx_file");
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_bone_file", PROPERTY_HINT_FILE, "*.tfxbone"), "set_tfx_bone_file", "get_tfx_bone_file");
@@ -40,6 +43,7 @@ void TressFXHairNode::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::INT, "mesh_surface_index"), "set_mesh_surface_index", "get_mesh_surface_index");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "num_follow_hairs"), "set_num_follow_hairs", "get_num_follow_hairs");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tip_separation"), "set_tip_separation", "get_tip_separation");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "follow_hair_radius", PROPERTY_HINT_RANGE, "0.0,0.05,0.001"), "set_follow_hair_radius", "get_follow_hair_radius");
 
     // Editor helper: expose a method that returns available .tfx files
     ClassDB::bind_method(D_METHOD("find_tfx_files"), &TressFXHairNode::find_tfx_files);
@@ -75,6 +79,7 @@ void TressFXHairNode::_ready() {
             last_object_description.mesh_surface_index = mesh_surface_index;
             last_object_description.num_follow_hairs = num_follow_hairs;
             last_object_description.tip_separation = tip_separation;
+            last_object_description.follow_hair_radius = follow_hair_radius;
 
             // Only register if we have a tfx file set; otherwise skip to avoid empty entries.
             if (!last_object_description.tfx_file.is_empty()) {
@@ -97,6 +102,7 @@ void TressFXHairNode::load_tfx_asset() {
     last_object_description.mesh_surface_index = mesh_surface_index;
     last_object_description.num_follow_hairs = num_follow_hairs;
     last_object_description.tip_separation = tip_separation;
+    last_object_description.follow_hair_radius = follow_hair_radius;
 
     // For this first step we also create a minimal collision description (empty/default)
     last_collision_description.name = last_object_description.name + String("_collision");

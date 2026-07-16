@@ -30,7 +30,7 @@
 [ext_resource type="Texture2D" uid="uid://c2xrkp8uottdp" path="res://Meshes/RatBoy/file12file10.jpg" id="28_aekav"]
 [ext_resource type="Texture2D" uid="uid://bqmtsrgtgtvsc" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_Normal.png" id="29_in2tx"]
 [ext_resource type="Script" uid="uid://dbxr7fdsx1xqd" path="res://orbit_light.gd" id="30_orbitlight"]
-[ext_resource type="Script" path="res://head_shake.gd" id="31_headshake"]
+[ext_resource type="Script" uid="uid://ho3f8wt3fpyp" path="res://head_shake.gd" id="31_headshake"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_mu3m0"]
 resource_name = "Floor"

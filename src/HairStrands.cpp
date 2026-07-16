@@ -139,6 +139,7 @@ HairStrands::HairStrands(
     const char* hairObjectName,
     int numFollowHairsPerGuideHair,
     float tipSeparationFactor,
+    float followHairRadius,
     int skinNumber,
     int renderIndex)
     : m_pScene(scene),
@@ -148,6 +149,7 @@ HairStrands::HairStrands(
       m_hairObjectName(hairObjectName ? hairObjectName : ""),
       m_numFollowHairsPerGuideHair(numFollowHairsPerGuideHair),
       m_tipSeparationFactor(tipSeparationFactor),
+      m_followHairRadius(followHairRadius),
       m_renderIndex(renderIndex) {
     // First incremental implementation:
     // Do not create TressFXHairObject yet (it needs a real EI_Device and command context).
@@ -187,8 +189,12 @@ HairStrands::HairStrands(
                 return;
             }
 
-            // Optional follow hairs.
-            m_asset->GenerateFollowHairs(m_numFollowHairsPerGuideHair, m_tipSeparationFactor, /*maxRadiusAroundGuideHair=*/0.0f);
+            // Optional follow hairs. Radius > 0 fans them out around their
+            // guides (was hardcoded 0.0 = invisible duplicates, NOTES.md H2).
+            // Guide physics is untouched: follow hairs are a pure function of
+            // the guides (UpdateFollowHairVertices), and the regression gate
+            // compares guide slots only (tools/compare_dump.py docstring).
+            m_asset->GenerateFollowHairs(m_numFollowHairsPerGuideHair, m_tipSeparationFactor, m_followHairRadius);
 
             if (!m_asset->ProcessAsset()) {
                 godot::UtilityFunctions::print(

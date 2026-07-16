@@ -28,6 +28,7 @@
 #include "Simulation.h"
 #include "HairStrands.h"
 #include "SDF.h"
+#include <cmath>
 #include "GodotScene.h"
 
 using namespace godot;
@@ -94,6 +95,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_gate_capture_mode"), &TressFXCharacter::get_gate_capture_mode);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gate_capture_mode"), "set_gate_capture_mode", "get_gate_capture_mode");
 
+    ClassDB::bind_method(D_METHOD("set_debug_force_fixed_dt", "enabled"), &TressFXCharacter::set_debug_force_fixed_dt);
+    ClassDB::bind_method(D_METHOD("get_debug_force_fixed_dt"), &TressFXCharacter::get_debug_force_fixed_dt);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_force_fixed_dt"), "set_debug_force_fixed_dt", "get_debug_force_fixed_dt");
+
     ClassDB::bind_method(D_METHOD("set_gravity_magnitude", "v"), &TressFXCharacter::set_gravity_magnitude);
     ClassDB::bind_method(D_METHOD("get_gravity_magnitude"), &TressFXCharacter::get_gravity_magnitude);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gravity_magnitude", PROPERTY_HINT_RANGE, "0.0,1.0,0.001"), "set_gravity_magnitude", "get_gravity_magnitude");
@@ -113,6 +118,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_local_stiffness", "v"), &TressFXCharacter::set_local_stiffness);
     ClassDB::bind_method(D_METHOD("get_local_stiffness"), &TressFXCharacter::get_local_stiffness);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "local_stiffness", PROPERTY_HINT_RANGE, "0.0,1.0,0.001"), "set_local_stiffness", "get_local_stiffness");
+
+    ClassDB::bind_method(D_METHOD("set_clamp_position_delta", "v"), &TressFXCharacter::set_clamp_position_delta);
+    ClassDB::bind_method(D_METHOD("get_clamp_position_delta"), &TressFXCharacter::get_clamp_position_delta);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "clamp_position_delta", PROPERTY_HINT_RANGE, "0.001,20.0,0.001"), "set_clamp_position_delta", "get_clamp_position_delta");
 
     ClassDB::bind_method(D_METHOD("set_hair_fiber_radius", "v"), &TressFXCharacter::set_hair_fiber_radius);
     ClassDB::bind_method(D_METHOD("get_hair_fiber_radius"), &TressFXCharacter::get_hair_fiber_radius);
@@ -255,7 +264,7 @@ void TressFXCharacter::_process(double delta) {
 
         const Vector3 wind = m_gate_capture_mode ? Vector3() : m_wind_velocity;
         PackedFloat32Array params;
-        params.resize(8);
+        params.resize(9);
         params[0] = (float)wind.x;
         params[1] = (float)wind.y;
         params[2] = (float)wind.z;
@@ -264,8 +273,9 @@ void TressFXCharacter::_process(double delta) {
         params[5] = m_global_stiffness;
         params[6] = m_global_range;
         params[7] = m_local_stiffness;
+        params[8] = m_clamp_position_delta;
 
-        const double dt = m_gate_capture_mode ? (1.0 / 60.0) : delta;
+        const double dt = (m_gate_capture_mode || m_debug_force_fixed_dt) ? (1.0 / 60.0) : delta;
 
         m_sim_steps++;
         int64_t gate_dump_frame = 0;
@@ -382,6 +392,28 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         ctx.globalConstraintsRange    = params[6];
         ctx.localConstraintStiffness  = params[7];
     }
+    if (params.size() >= 9) {
+        ctx.clampPositionDelta        = params[8];
+    }
+
+    // A3.1 watchdog, input side: are the bone matrices we are about to feed
+    // the kernels already poisoned? (Tiny scan: <= bones x 16 floats per hair.)
+    const int64_t tick = ++m_rt_tick_count;
+    if (!m_watchdog_bones_reported.load()) {
+        for (size_t h = 0; h < ctx.bone_matrices.size() && !m_watchdog_bones_reported.load(); ++h) {
+            const PackedByteArray& b = ctx.bone_matrices[h];
+            const float* f = reinterpret_cast<const float*>(b.ptr());
+            const int64_t n = (int64_t)b.size() / 4;
+            for (int64_t i = 0; i < n; ++i) {
+                if (!std::isfinite(f[i])) {
+                    m_watchdog_bones_reported.store(true);
+                    UtilityFunctions::print("TressFX WATCHDOG: NON-FINITE BONE MATRIX at sim tick ", tick,
+                        " hair=", (int64_t)h, " bone=", i / 16, " element=", i % 16, " value=", f[i]);
+                    break;
+                }
+            }
+        }
+    }
 
     sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/false, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
 
@@ -423,6 +455,39 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
 }
 
 void TressFXCharacter::_on_positions_async(const PackedByteArray& data) {
+    // A3.1 watchdog, output side: find the FIRST vertex the sim corrupted.
+    // Full scan per tick until it fires once, then permanently quiet.
+    if (!m_watchdog_fired.load() && data.size() >= 16 && m_gate_vps > 0) {
+        const float* f = reinterpret_cast<const float*>(data.ptr());
+        const int64_t n = (int64_t)data.size() / 4;
+        int64_t bad = -1;
+        float max_abs = 0.0f;
+        int64_t max_idx = 0;
+        for (int64_t i = 0; i < n; ++i) {
+            if ((i & 3) == 3) continue; // skip w components (inverse mass, not a position)
+            const float v = f[i];
+            if (!std::isfinite(v)) { bad = i; break; }
+            const float a = std::abs(v);
+            if (a > max_abs) { max_abs = a; max_idx = i; }
+        }
+        // No NaN/inf but a vertex kilometers away is the same failure teleporting.
+        const bool teleport = (bad < 0 && max_abs > 1000.0f);
+        if (bad >= 0 || teleport) {
+            m_watchdog_fired.store(true);
+            const int64_t fidx = (bad >= 0) ? bad : max_idx;
+            const int64_t vertex = fidx / 4;
+            const int64_t strand = vertex / m_gate_vps;
+            const int64_t local = vertex % m_gate_vps;
+            const int64_t slot = (m_gate_stride > 0) ? (strand % m_gate_stride) : 0;
+            UtilityFunctions::print("TressFX WATCHDOG: first bad position at sim tick ~", m_rt_tick_count.load(),
+                (bad >= 0) ? " (NON-FINITE)" : " (TELEPORT)",
+                ": vertex=", vertex,
+                " strand=", strand, (slot == 0) ? " [GUIDE]" : " [follow]",
+                " local_vertex=", local, "/", (int64_t)m_gate_vps,
+                " xyz=(", f[vertex * 4 + 0], ", ", f[vertex * 4 + 1], ", ", f[vertex * 4 + 2], ")");
+        }
+    }
+
     // Render-thread callback: just stash; _process consumes on the main thread.
     std::lock_guard<std::mutex> lock(m_readback_mutex);
     m_readback_positions = data;
@@ -588,7 +653,8 @@ void TressFXCharacter::load_all_assets() {
             String("' bone='") + d.tfx_bone_file +
             String("' obj='") + d.hair_object_name +
             String("' follow=") + String::num_int64(d.num_follow_hairs) +
-            String(" tip=") + String::num(d.tip_separation, 3));
+            String(" tip=") + String::num(d.tip_separation, 3) +
+            String(" followRadius=") + String::num(d.follow_hair_radius, 4));
 
         m_adapterScenes.push_back(std::make_unique<EI_Scene>());
         m_adapterScenes.back()->set_skeleton(default_skeleton);
@@ -604,6 +670,7 @@ void TressFXCharacter::load_all_assets() {
             obj.get_data(),
             d.num_follow_hairs,
             d.tip_separation,
+            d.follow_hair_radius,
             /*skinNumber=*/0,
             /*renderIndex=*/i));
     }
@@ -743,6 +810,14 @@ bool TressFXCharacter::get_gate_capture_mode() const {
     return m_gate_capture_mode;
 }
 
+void TressFXCharacter::set_debug_force_fixed_dt(bool enabled) {
+    m_debug_force_fixed_dt = enabled;
+}
+
+bool TressFXCharacter::get_debug_force_fixed_dt() const {
+    return m_debug_force_fixed_dt;
+}
+
 void TressFXCharacter::set_wind_velocity(const godot::Vector3& wind_velocity) {
     m_wind_velocity = wind_velocity;
 }
@@ -765,6 +840,9 @@ float TressFXCharacter::get_global_range() const { return m_global_range; }
 
 void TressFXCharacter::set_local_stiffness(float v) { m_local_stiffness = v; }
 float TressFXCharacter::get_local_stiffness() const { return m_local_stiffness; }
+
+void TressFXCharacter::set_clamp_position_delta(float v) { m_clamp_position_delta = v; }
+float TressFXCharacter::get_clamp_position_delta() const { return m_clamp_position_delta; }
 
 void TressFXCharacter::set_hair_fiber_radius(float v) {
     m_hair_fiber_radius = v;
@@ -890,17 +968,10 @@ void TressFXCharacter::refresh_gpu_debug_hair_lines_3d() {
     add_child(debug_root);
     m_gpu_debug_root = debug_root;
 
+    // No BoneAttachment3D anchor anymore: sim output is in skeleton model
+    // space (bone motion lives in the skinning matrices), so the mount is the
+    // Skeleton3D transform itself -- see update_gpu_debug_hair_lines_3d_transform.
     m_gpu_debug_anchor = nullptr;
-    if (m_debug_skeleton && !m_debug_follow_bone.is_empty()) {
-        const int bone_idx = m_debug_skeleton->find_bone(m_debug_follow_bone);
-        if (bone_idx >= 0) {
-            BoneAttachment3D* attach = memnew(BoneAttachment3D);
-            attach->set_name(String("TressFXGPUDebugHairAnchor_") + m_debug_follow_bone);
-            attach->set_bone_name(StringName(m_debug_follow_bone));
-            m_debug_skeleton->add_child(attach);
-            m_gpu_debug_anchor = attach;
-        }
-    }
 
     update_gpu_debug_hair_lines_3d_transform();
 
@@ -1003,10 +1074,18 @@ void TressFXCharacter::update_gpu_debug_hair_lines_3d_transform() {
         return;
     }
 
+    // The sim outputs positions in SKELETON MODEL SPACE: the skinning matrices
+    // (pose x rest^-1) already contain every bone's motion, including the root
+    // bone's. So the only correct render mount is the Skeleton3D's own global
+    // transform. Parenting to the root-bone BoneAttachment3D (the pre-A3 code)
+    // applied the root bone's pose a SECOND time -- invisible while the
+    // skeleton was never animated (an attachment on a never-dirtied skeleton
+    // keeps its initial transform), but the first real pose write snapped the
+    // anchor to the root joint's saved pose and teleported all the hair
+    // (A3.1's "hair vanishes when the head shakes" was this, not a solver
+    // explosion -- the watchdog showed perfectly healthy positions).
     Transform3D t;
-    if (m_gpu_debug_anchor) {
-        t = m_gpu_debug_anchor->get_global_transform();
-    } else if (m_debug_skeleton) {
+    if (m_debug_skeleton) {
         t = m_debug_skeleton->get_global_transform();
     } else {
         t = get_global_transform();
@@ -1100,6 +1179,19 @@ void TressFXCharacter::build_ribbon_mesh_if_needed() {
     placeholder_positions.resize(vertex_count);
     godot::PackedVector2Array vertex_uv; // x = global vertex index, y = side (0 -> -1, 1 -> +1)
     vertex_uv.resize(vertex_count);
+    // Placeholder only: the shader fully overwrites TANGENT (and NORMAL/BINORMAL)
+    // from the position texture every frame. Godot's renderer still requires the
+    // mesh's vertex format to declare a tangent slot exists whenever the shader
+    // writes TANGENT/BINORMAL, or it warns every frame ("requires tangents with
+    // a mesh that doesn't contain tangents") -- these values are never read.
+    godot::PackedFloat32Array vertex_tangents;
+    vertex_tangents.resize(vertex_count * 4);
+    for (int64_t t = 0; t < vertex_count; ++t) {
+        vertex_tangents[t * 4 + 0] = 1.0f;
+        vertex_tangents[t * 4 + 1] = 0.0f;
+        vertex_tangents[t * 4 + 2] = 0.0f;
+        vertex_tangents[t * 4 + 3] = 1.0f;
+    }
     godot::PackedInt32Array indices;
     indices.resize(index_count);
 
@@ -1131,6 +1223,7 @@ void TressFXCharacter::build_ribbon_mesh_if_needed() {
     arrays.resize(godot::Mesh::ARRAY_MAX);
     arrays[godot::Mesh::ARRAY_VERTEX] = placeholder_positions;
     arrays[godot::Mesh::ARRAY_TEX_UV] = vertex_uv;
+    arrays[godot::Mesh::ARRAY_TANGENT] = vertex_tangents;
     arrays[godot::Mesh::ARRAY_INDEX] = indices;
 
     m_gpu_ribbon_mesh.instantiate();

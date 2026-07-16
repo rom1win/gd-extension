@@ -24,6 +24,7 @@ public:
         const char* hairObjectName,
         int numFollowHairsPerGuideHair,
         float tipSeparationFactor,
+        float followHairRadius,
         int skinNumber,
         int renderIndex);
 
@@ -93,5 +94,6 @@ private:
     std::string m_hairObjectName;
     int m_numFollowHairsPerGuideHair = 0;
     float m_tipSeparationFactor = 1.0f;
+    float m_followHairRadius = 0.0f;
     int m_renderIndex = 0;
 };

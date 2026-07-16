@@ -109,6 +109,7 @@ void Simulation::StartSimulation(
     settings.m_damping                    = ctx.damping;
     settings.m_gravityMagnitude           = ctx.gravityMagnitude;
     settings.m_tipSeparation              = ctx.tipSeparation;
+    settings.m_clampPositionDelta         = ctx.clampPositionDelta;
     {
         const godot::Vector3 w = ctx.wind_velocity;
         const float mag = (float)w.length();

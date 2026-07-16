@@ -41,6 +41,12 @@ struct SimulationContext {
     float damping                     = 0.068f;
     float gravityMagnitude            = 0.09f;
     float tipSeparation               = 1.0f;   // follow-hair spread; RatBoy default (NOTES §6)
+    // Max distance (sim-space units = meters for us) a vertex may move per sim
+    // step before the kernel clamps it and rewrites its velocity history.
+    // AMD's default 20 assumed a centimeter-scale world; in meters it never
+    // fires. Kept at 20 by default (= AMD behavior, gate-identical); lower it
+    // to engage the clamp (A3.1 fast-bone-motion stability).
+    float clampPositionDelta          = 20.0f;
 };
 
 class Simulation {

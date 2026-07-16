@@ -1136,11 +1136,11 @@ bones/105/rotation = Quaternion(0, 0, -0.0147434, 0.999891)
 bones/105/scale = Vector3(1, 1, 1)
 
 [node name="Ratboy" type="MeshInstance3D" parent="CharacterBody3D/Skeleton3D"]
+gi_mode = 2
 mesh = SubResource("ArrayMesh_8jmkf")
 skin = SubResource("Skin_qseu4")
 
 [node name="TressFXCharacter" type="TressFXCharacter" parent="CharacterBody3D"]
-debug_draw_hair_lines = true
 transform = Transform3D(-4.37114e-08, 0, 1, 0, 1, 0, -1, 0, -4.37114e-08, 0, 0, 0)
 
 [node name="TressFXCollisionNode" type="TressFXCollisionNode" parent="CharacterBody3D/TressFXCharacter"]

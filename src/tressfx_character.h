@@ -82,12 +82,20 @@ public:
     void set_gate_capture_mode(bool enabled);
     bool get_gate_capture_mode() const;
 
+    // A3.1 diagnostic only: forces dt=1/60 like gate_capture_mode, but leaves
+    // real bone poses and wind alone -- lets head_shake.gd's motion run under
+    // fixed dt to isolate whether variable per-frame dt is what destabilizes
+    // the solver under fast bone motion. Off by default; not a product feature.
+    void set_debug_force_fixed_dt(bool enabled);
+    bool get_debug_force_fixed_dt() const;
+
     // Simulation physics properties (exposed to inspector).
     void set_gravity_magnitude(float v); float get_gravity_magnitude() const;
     void set_damping(float v);           float get_damping() const;
     void set_global_stiffness(float v);  float get_global_stiffness() const;
     void set_global_range(float v);      float get_global_range() const;
     void set_local_stiffness(float v);   float get_local_stiffness() const;
+    void set_clamp_position_delta(float v); float get_clamp_position_delta() const;
 
     // A2.2: ribbon half-width in meters (TressFX FiberRadius convention).
     void set_hair_fiber_radius(float v); float get_hair_fiber_radius() const;
@@ -149,6 +157,9 @@ private:
     float m_global_stiffness   = 0.408f;
     float m_global_range       = 0.308f;
     float m_local_stiffness    = 0.908f;
+    // Max vertex travel per sim step (meters) before the kernel clamps it.
+    // 20 = AMD's default = effectively OFF at meter scale (see Simulation.h).
+    float m_clamp_position_delta = 20.0f;
 
     // Cached packed guide positions for optional legacy 2D overlay texture output.
     godot::PackedByteArray m_last_guide_positions_bytes;
@@ -176,7 +187,10 @@ private:
     godot::MeshInstance3D* m_gpu_ribbon_instance = nullptr;
     godot::Ref<godot::ArrayMesh> m_gpu_ribbon_mesh;
     godot::Ref<godot::ShaderMaterial> m_gpu_ribbon_material;
-    float m_hair_fiber_radius = 0.0021f;
+    // 0.0021 is AMD's default (TressFXSettings.h), but AMD pairs it with tip
+    // thinning and offset follow hairs; with those now in place the base width
+    // can come down. Live-tunable in the Inspector while the game runs.
+    float m_hair_fiber_radius = 0.001f;
     godot::Color m_hair_root_color = godot::Color(0.25f, 0.12f, 0.06f);
     godot::Color m_hair_tip_color  = godot::Color(0.55f, 0.35f, 0.18f);
     bool m_show_gpu_debug_lines = false;
@@ -220,7 +234,17 @@ private:
     void teardown_gpu_runtime();
 
     bool m_gate_capture_mode = false;
+    bool m_debug_force_fixed_dt = false;
     std::atomic<bool> m_rt_gpu_ready{false};
+
+    // A3 NaN watchdog: reports the FIRST non-finite or absurdly large position
+    // in the per-tick async readback (and any non-finite bone matrix), then
+    // goes quiet. Zero cost after it fires; kept as a tripwire for A3.2+
+    // (collision) work. Proved during A3.1 that the "explosion" was never a
+    // solver problem (positions stayed finite while hair "vanished").
+    std::atomic<bool> m_watchdog_fired{false};
+    std::atomic<bool> m_watchdog_bones_reported{false};
+    std::atomic<int64_t> m_rt_tick_count{0};
     uint64_t m_sim_steps = 0;
 
     // Dump metadata cached on the main thread before GPU init so the gate-dump

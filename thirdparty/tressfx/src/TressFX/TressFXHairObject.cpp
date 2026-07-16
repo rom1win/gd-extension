@@ -397,7 +397,13 @@ void TressFXHairObject::UpdateSimulationParameters(const TressFXSimulationSettin
     m_SimCB[m_SimulationFrame%2]->SetTipSeperation(settings->m_tipSeparation);
 
     // use 1.0 for now, this needs to be maxVelocity * timestep
-    m_SimCB[m_SimulationFrame % 2]->g_ClampPositionDelta = 20.0f;
+    // [gd-extension patch] AMD hardcoded 20.0f here, ignoring the
+    // m_clampPositionDelta field that already exists in TressFXSimulationSettings
+    // (default 20.0f, so behavior is unchanged unless a caller overrides it).
+    // 20 was sane in AMD's centimeter-scale demo world; our sim space is meters,
+    // where 20 m/step means the clamp never fires. Read the settings field so
+    // the host can tune it (A3.1 stability work).
+    m_SimCB[m_SimulationFrame % 2]->g_ClampPositionDelta = settings->m_clampPositionDelta;
 
     // Right now, we do all local contraint iterations on the CPU.
     // It's actually a bit faster to
