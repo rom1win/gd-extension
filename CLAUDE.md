@@ -120,6 +120,22 @@ heart; the C++ extension around them is the product.
   - **Gate status: not yet run.** The follow-hair-radius change is asset
     cooking (physics-affecting per the hard rules) — run the regression gate
     before committing any of this.
+- **Scene restructure: DONE, maintainer-verified (2026-07-17, commit 1217a06).**
+  `demo/ratboy_node.tscn` is now THE self-contained character scene (body +
+  skeleton + head_shake.gd + TressFXCharacter with Collision_body/Hair_mohawk);
+  `demo/babylon.tscn` is environment-only and *instances* it; `main.tscn`'s
+  `character_path` is `../babylon/RatboyNode/TressFXCharacter`. Character/hair
+  properties (including `gate_capture_mode`) are edited INSIDE ratboy_node.tscn,
+  not babylon. This killed a full hand-assembled duplicate of the character that
+  used to live in babylon.tscn (~1170 lines).
+- **Current dev machine (since 2026-07-16): Intel Iris Xe laptop (i7-1185G7).**
+  Historical measurements (noise floor, FPS waiver) were on an RX 7900 XTX.
+  The AMD-captured `reference/` baselines still pass on Intel (frame-1 RMS
+  0.000000 — cross-vendor determinism better than assumed). Godot runtime logs:
+  `%APPDATA%/Godot/app_userdata/Nouveau projet de jeu/logs/`. A "0xc000001d
+  illegal instruction in godot.exe" event = Godot's own deliberate abort, usually
+  after `Vulkan device was lost` (check the log, not the event viewer, for the
+  real error).
 - Git tags: `cpp-reference` (pre-rewrite baseline, never delete/rewrite), `gate-1`,
   `gate-2`, `gate-a1`, `gate-a2` (added at the A2 merge).
 
@@ -197,7 +213,9 @@ heart; the C++ extension around them is the product.
 
 ## How to run the regression gate (memorize this; it recurs at every milestone)
 
-1. In `demo/babylon.tscn`, set `gate_capture_mode = true` on the TressFXCharacter node.
+1. In `demo/ratboy_node.tscn` (the character scene — since the 2026-07-17
+   restructure the TressFXCharacter lives there, not in babylon.tscn), set
+   `gate_capture_mode = true` on the TressFXCharacter node.
 2. Ask the maintainer to F5, wait for the three "GATE A1 dump written" lines, close.
 3. Run `python tools/compare_dump.py` — must print `REGRESSION: PASS`.
 4. Set `gate_capture_mode = false` again. Never commit the scene with it on.
@@ -244,13 +262,32 @@ heart; the C++ extension around them is the product.
     Still open for A3.1 polish (non-blocking): scene ships `shaking = false`;
     real AnimationPlayer clip playback hasn't been exercised yet (only the
     procedural shake) — worth a quick test when convenient.
-  - **A3.2 — capsule collision.** Port the collision-capsule block (~40 lines,
-    `CapsuleCollision()` + its call site) from vendored `TressFXSimulation.hlsl` into
-    `TressFXSimulation.LengthConstriantsWindAndCollision.comp.glsl`. This IS a kernel
-    change: write the audit note referencing the HLSL lines, wire capsule data from
-    `TressFXCollisionNode` into the sim UBO (fields exist — see
-    `TRESSFX_COLLISION_CAPSULES` in `thirdparty/tressfx/src/TressFX/TressFXHairObject.cpp`),
-    add a `collision_enabled` property (default false).
+  - **A3.2 — SDF collision (pivoted from capsules, maintainer decision 2026-07-17;
+    branch `a3.2-sdf-collision`).** The capsule route was implemented first and is
+    PARKED, not lost: the kernel port (gate-green, audit note F13) sits on
+    `a3-animation-collision` @ 1222d3c, the node/UBO wiring on
+    `wip-a3.2-manual-capsule-authoring`. Parked because the kernel/UBO change
+    triggers a Vulkan DEVICE-LOST (GPU hang → Windows TDR → Godot deliberate
+    abort, logged as 0xc000001d in godot.exe) on the Intel machine in NORMAL mode
+    only — capture mode runs fine, so the regression gate could not see it. Root
+    cause never isolated (UBO growth vs. kernel loop). Do not merge those branches
+    without solving that on Intel first.
+    SDF instead: separate compute passes, the six audited kernels stay UNTOUCHED.
+    Vendored code is complete (`TressFXSDFCollision.hlsl` entry points at lines
+    302/330/401/532/600, `TressFXBoneSkinning.hlsl` line 58, C++ classes, and
+    `Ratboy_body.tfxmesh` is already in the repo wired to the `Collision_body`
+    node). Four subtasks, each with a maintainer check and an F5-stays-alive test
+    (Intel device-lost vigilance — especially the atomics in the SDF build pass):
+    1. `.tfxmesh` loader in `src/SDF.cpp` CollisionMesh (CPU parse + GPU buffers,
+       no dispatch), 2. bone-skinning kernel port (collision mesh follows
+    skeleton), 3. SDF build kernels port (Init/Construct/Finalize, uint atomics),
+    4. collide-hair pass + `sdf_collision_enabled` on TressFXCharacter (default
+    false) wired through `StartSimulation`'s existing `bUpdateCollMesh` /
+    `bSDFCollisionResponse` params (src/Simulation.cpp ~50-58, call site
+    tressfx_character.cpp ~418). New kernels need audit notes referencing the
+    HLSL lines. Maintainer will separately author a PhysicalBone3D physical
+    skeleton (ragdoll validation; also future capsule-authoring source if
+    capsules ever return).
   **Gate A3:** violent head-shake keeps roots glued and no visible scalp penetration
   (maintainer's visual check); `compare_dump.py` still green with collision OFF.
 - **B — Blender pipeline.** Editor-only C++ importer: parse Alembic hair curves →
