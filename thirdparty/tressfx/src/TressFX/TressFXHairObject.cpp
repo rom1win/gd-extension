@@ -429,9 +429,13 @@ void TressFXHairObject::UpdateSimulationParameters(const TressFXSimulationSettin
 
 
 #if TRESSFX_COLLISION_CAPSULES
-    m_SimCB.m_numCollisionCapsules.x = 0;
+    // [gd-extension patch] AMD's original line here (`m_SimCB.m_numCollisionCapsules.x
+    // = 0;`) doesn't compile: m_SimCB is the ping-pong array, not a pointer to the
+    // struct (never caught because this guard was always off upstream). Shipped
+    // inert until A3.2 subtask B wires a real capsule count from a scene node.
+    m_SimCB[m_SimulationFrame % 2]->m_numCollisionCapsules.x = 0;
 
-    // Below is an example showing how to pass capsule collision objects. 
+    // Below is an example showing how to pass capsule collision objects.
     /*
     mSimCB.m_numCollisionCapsules.x = 1;
     mSimCB.m_centerAndRadius0[0] = { 0, 0.f, 0.f, 50.f };

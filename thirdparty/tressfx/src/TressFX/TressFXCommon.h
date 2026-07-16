@@ -28,7 +28,11 @@
 
 #include "AMD_Types.h"
 
+// [gd-extension] overridable via Sconstruct CPPDEFINES so the vendored default
+// (0) doesn't have to be edited to enable the capsule fields build-wide.
+#ifndef TRESSFX_COLLISION_CAPSULES
 #define TRESSFX_COLLISION_CAPSULES 0
+#endif
 #define TRESSFX_MAX_NUM_COLLISION_CAPSULES 8
 
 #define TRESSFX_SIM_THREAD_GROUP_SIZE 64

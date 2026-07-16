@@ -2,6 +2,7 @@
 
 #define THREAD_GROUP_SIZE 64
 #define AMD_TRESSFX_MAX_NUM_BONES 128
+#define TRESSFX_MAX_NUM_COLLISION_CAPSULES 8
 
 layout(local_size_x = THREAD_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
@@ -28,6 +29,11 @@ layout(set = 0, binding = 13, std140) uniform tressfxSimParameters {
     float g_pad1;
     float g_pad2;
     mat4 g_BoneSkinningMatrix[AMD_TRESSFX_MAX_NUM_BONES];
+
+    // A3.2: capsule collision (inert while g_numCollisionCapsules.x == 0).
+    vec4 g_centerAndRadius0[TRESSFX_MAX_NUM_COLLISION_CAPSULES];
+    vec4 g_centerAndRadius1[TRESSFX_MAX_NUM_COLLISION_CAPSULES];
+    ivec4 g_numCollisionCapsules;
 } cb;
 
 layout(set = 1, binding = 0, std430) buffer RWPositions { vec4 g_HairVertexPositions[]; };
@@ -43,6 +49,107 @@ shared vec4 sharedTangent[THREAD_GROUP_SIZE];
 shared float sharedLength[THREAD_GROUP_SIZE];
 
 bool IsMovable(vec4 particle) { return particle.w > 0.0; }
+
+// Ported from TressFXSimulation.hlsl (CollisionCapsule / CapsuleCollision /
+// ResolveCapsuleCollisions, ~lines 449-522 and 831-862). GLSL has no default
+// arguments, so `friction` is explicit here; AMD's own call site always passes
+// its default of 0.4.
+struct CollisionCapsule {
+    vec4 p0; // xyz = position of capsule 0, w = radius 0
+    vec4 p1; // xyz = position of capsule 1, w = radius 1
+};
+
+//--------------------------------------------------------------------------------------
+//
+//  CapsuleCollision
+//
+//  Moves the position based on collision with capsule
+//
+//--------------------------------------------------------------------------------------
+bool CapsuleCollision(vec4 curPosition, vec4 oldPosition, inout vec3 newPosition, CollisionCapsule cc, float friction) {
+    const float radius0 = cc.p0.w;
+    const float radius1 = cc.p1.w;
+    newPosition = curPosition.xyz;
+
+    if (!IsMovable(curPosition))
+        return false;
+
+    vec3 segment = cc.p1.xyz - cc.p0.xyz;
+    vec3 delta0 = curPosition.xyz - cc.p0.xyz;
+    vec3 delta1 = cc.p1.xyz - curPosition.xyz;
+
+    float dist0 = dot(delta0, segment);
+    float dist1 = dot(delta1, segment);
+
+    // colliding with sphere 1
+    if (dist0 < 0.0) {
+        if (dot(delta0, delta0) < radius0 * radius0) {
+            vec3 n = normalize(delta0);
+            newPosition = radius0 * n + cc.p0.xyz;
+            return true;
+        }
+
+        return false;
+    }
+
+    // colliding with sphere 2
+    if (dist1 < 0.0) {
+        if (dot(delta1, delta1) < radius1 * radius1) {
+            vec3 n = normalize(-delta1);
+            newPosition = radius1 * n + cc.p1.xyz;
+            return true;
+        }
+
+        return false;
+    }
+
+    // colliding with middle cylinder
+    vec3 x = (dist0 * cc.p1.xyz + dist1 * cc.p0.xyz) / (dist0 + dist1);
+    vec3 delta = curPosition.xyz - x;
+
+    float radius_at_x = (dist0 * radius1 + dist1 * radius0) / (dist0 + dist1);
+
+    if (dot(delta, delta) < radius_at_x * radius_at_x) {
+        vec3 n = normalize(delta);
+        vec3 velVec = curPosition.xyz - oldPosition.xyz;
+        vec3 segN = normalize(segment);
+        vec3 vecTangent = dot(velVec, segN) * segN;
+        vec3 vecNormal = velVec - vecTangent;
+        newPosition = oldPosition.xyz + friction * vecTangent + (vecNormal + radius_at_x * n - delta);
+        return true;
+    }
+
+    return false;
+}
+
+// Resolve hair vs capsule collisions. Inert while cb.g_numCollisionCapsules.x == 0.
+bool ResolveCapsuleCollisions(inout vec4 curPosition, vec4 oldPos, float friction) {
+    bool bAnyColDetected = false;
+
+    if (cb.g_numCollisionCapsules.x > 0) {
+        vec3 newPos;
+
+        for (int i = 0; i < cb.g_numCollisionCapsules.x; i++) {
+            vec3 center0 = cb.g_centerAndRadius0[i].xyz;
+            vec3 center1 = cb.g_centerAndRadius1[i].xyz;
+
+            CollisionCapsule cc;
+            cc.p0.xyz = center0;
+            cc.p0.w = cb.g_centerAndRadius0[i].w;
+            cc.p1.xyz = center1;
+            cc.p1.w = cb.g_centerAndRadius1[i].w;
+
+            bool bColDetected = CapsuleCollision(curPosition, oldPos, newPos, cc, friction);
+
+            if (bColDetected)
+                curPosition.xyz = newPos;
+
+            bAnyColDetected = bColDetected ? true : bAnyColDetected;
+        }
+    }
+
+    return bAnyColDetected;
+}
 
 vec2 ConstraintMultiplier(vec4 particle0, vec4 particle1) {
     const bool m0 = IsMovable(particle0);
@@ -173,10 +280,12 @@ void main() {
         group_sync();
     }
 
-    // Collision: capsule collision is disabled in the current upstream defaults.
+    //------------------------------------------
+    // Collision handling with capsule objects
+    //------------------------------------------
     vec4 oldPos = g_HairVertexPositionsPrev[globalVertexIndex];
-    bool bAnyColDetected = false;
 
+    bool bAnyColDetected = ResolveCapsuleCollisions(sharedPos[indexForSharedMem], oldPos, 0.4);
     group_sync();
 
     // Compute tangent

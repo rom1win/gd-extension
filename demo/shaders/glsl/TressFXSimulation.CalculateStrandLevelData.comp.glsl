@@ -2,6 +2,7 @@
 
 #define THREAD_GROUP_SIZE 64
 #define AMD_TRESSFX_MAX_NUM_BONES 128
+#define TRESSFX_MAX_NUM_COLLISION_CAPSULES 8
 
 layout(local_size_x = THREAD_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
@@ -48,6 +49,11 @@ layout(set = 0, binding = 13, std140) uniform tressfxSimParameters {
     float g_pad2;
 
     mat4 g_BoneSkinningMatrix[AMD_TRESSFX_MAX_NUM_BONES];
+
+    // A3.2: capsule collision (inert while g_numCollisionCapsules.x == 0).
+    vec4 g_centerAndRadius0[TRESSFX_MAX_NUM_COLLISION_CAPSULES];
+    vec4 g_centerAndRadius1[TRESSFX_MAX_NUM_COLLISION_CAPSULES];
+    ivec4 g_numCollisionCapsules;
 } cb;
 
 layout(set = 1, binding = 0, std430) buffer RWPositions {

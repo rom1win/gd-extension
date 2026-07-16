@@ -115,6 +115,36 @@ porting error). HLSL's shadowed dead `float4 force` is correctly omitted.
 Exact port. `mix(a, b, t)` ≡ HLSL `(1−t)·a + t·b`; the `localVertexIndex < 2` early-out
 and xyz-only writebacks match.
 
+## F13 — A3.2 capsule collision port (2026-07-16) — ADDED, shipped inert
+
+Ported from `thirdparty/tressfx/src/Shaders/TressFXSimulation.hlsl` into
+`TressFXSimulation.LengthConstriantsWindAndCollision.comp.glsl`:
+
+- `CollisionCapsule` struct (HLSL 449–453), `CapsuleCollision()` (HLSL 462–522),
+  `ResolveCapsuleCollisions()` (HLSL 831–862) — line-for-line; HLSL default arg
+  `friction = 0.4f` made explicit in GLSL and passed as `0.4` where AMD's defaults
+  resolve. Reuses the kernel's existing `IsMovable()`.
+- Call site (HLSL 940–975): replaces the previous disabled placeholder; runs on
+  `sharedPos[indexForSharedMem]` against `oldPos =` prev-frame position, followed by
+  the kernel's existing `group_sync()` (≡ `GroupMemoryBarrierWithGroupSync`). The
+  pre-existing `if (bAnyColDetected)` history-rewrite block downstream matches AMD's
+  and was not modified.
+- UBO extension in ALL SIX kernels (layout must match `TressFXSimulationParams`):
+  appended after `g_BoneSkinningMatrix[]` — `vec4 g_centerAndRadius0[8]`,
+  `vec4 g_centerAndRadius1[8]`, `ivec4 g_numCollisionCapsules`
+  (`TRESSFX_MAX_NUM_COLLISION_CAPSULES = 8`). New UBO total 8624 bytes (was 8352);
+  NOTES.md §2 table updated. C++ side sizes the buffer via `sizeof()` (templated
+  `ConstantBuffer<T>`), so it grew automatically.
+- C++ enablement: `TRESSFX_COLLISION_CAPSULES=1` defined in `Sconstruct`
+  (`TressFXCommon.h`'s `#define 0` wrapped in `#ifndef` to allow the override).
+  Upstream bug found in the never-compiled capsule block of `TressFXHairObject.cpp`
+  (~431): AMD writes `m_SimCB.m_numCollisionCapsules` but `m_SimCB` is the
+  double-buffered array — fixed to `m_SimCB[m_SimulationFrame % 2]->…`; invisible
+  upstream because the guard defaulted to 0.
+- Shipped INERT: `m_numCollisionCapsules.x = 0` forced every frame (no Godot-side
+  wiring yet — that is A3.2 subtask B). Regression gate 2026-07-16: PASS, frame 1
+  RMS 0.000000 (bit-identical within readback tolerance).
+
 ---
 
 ## Cross-checks performed

@@ -43,10 +43,15 @@ kernel's block declaration — this is the `_pack_sim_params()` spec):
 | 148 | `g_ClampPositionDelta` (float) | 20.0 (hardcoded upstream; "should be maxVelocity·dt") |
 | 152 | `g_pad1`, `g_pad2` (2 floats) | 0 |
 | 160 | `g_BoneSkinningMatrix[N]` (mat4 array) | N = 128 in the GLSL kernels (see AUDIT F2) |
+| 8352 | `g_centerAndRadius0[8]` (vec4 array) | A3.2 capsule collision: xyz = capsule endpoint 0, w = radius 0; inert while `g_numCollisionCapsules.x == 0` |
+| 8480 | `g_centerAndRadius1[8]` (vec4 array) | capsule endpoint 1 + radius 1, same 8 slots |
+| 8608 | `g_numCollisionCapsules` (ivec4) | x = active capsule count (0 = feature off), yzw unused |
 
-Total with N=128: 160 + 128·64 = **8352 bytes**. The C++ side allocates for N=512 and
-that mismatch works only because the buffer is bigger than the shader block; the
-rewrite must use one N on both sides (128).
+Total with N=128: 160 + 128·64 = 8352 bytes pre-A3.2. With the capsule fields
+(added after `m_BoneSkinningMatrix`, guarded by `TRESSFX_COLLISION_CAPSULES` on the
+C++ side): 8352 + 8·16 + 8·16 + 16 = **8624 bytes**. The C++ side allocates for N=512
+bones and that mismatch works only because the buffer is bigger than the shader
+block; the rewrite must use one N on both sides (128).
 
 Notes:
 - Wind pyramid: the 4 corners are the wind direction rotated ±40° around two axes

@@ -17,6 +17,9 @@ env = SConscript("godot-cpp/SConstruct")
 # tweak this if you want to use different folders, or more folders, to store your source code in.
 env.Append(CPPPATH=["src/", "thirdparty/tressfx/src/", "thirdparty/tressfx/src/TressFX/", "thirdparty/tressfx/src/Math/"])
 env.Append(CPPDEFINES=["TRESSFX_GODOT"])
+# A3.2: enable capsule collision fields in TressFXSimulationParams (shipped
+# inert, m_numCollisionCapsules.x forced to 0 in TressFXHairObject.cpp).
+env.Append(CPPDEFINES=["TRESSFX_COLLISION_CAPSULES=1"])
 sources = Glob("src/*.cpp")
 # TressFX reference sources, vendored under thirdparty/tressfx (see its README):
 # explicit keep list only (no wildcards, so unused render/SDF paths cannot creep
