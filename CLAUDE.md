@@ -260,6 +260,14 @@ heart; the C++ extension around them is the product.
   own mesh reproduces the `.tfxbone` weights — the answer key; (2) my own rigged
   Blender character imports, binds, and simulates. Only after Gate B may the `.tfx`
   parser be removed (or kept as a bonus format — my call then).
+  **Scope expanded 2026-07-16** (see "Stylized ribbons / feathers" under
+  Follow-ups): if stylized ribbons or feathers are wanted, the cooked schema
+  needs more than position/binding — a per-strand root frame (normal+tangent,
+  not just position), per-vertex twist angle, per-vertex width, a UV mode flag,
+  and a material slot. Decide the authoring convention (curve attributes vs.
+  deriving frame+twist from an authored ribbon mesh) EARLY in B — Blender's
+  Alembic export of custom curve attributes is limited, so this is a
+  feasibility question to test up front, not a detail to patch in at the end.
 - **C — packaging.** Release-template builds (not just debug), clean node API +
   parameter presets, docs, AMD license included. **Gate C:** a fresh Godot project can
   install the addon and put hair on a character following only the docs.
@@ -318,6 +326,90 @@ heart; the C++ extension around them is the product.
   - **SDF collision** (precise body-shaped collision vs. capsules). The
     roadmap already scopes this correctly under A3.2: capsules first, SDF only
     if capsules visibly fail scalp penetration.
+- **Second visual pass — gap analysis + long-term vision (2026-07-16, from a
+  maintainer feature-review doc).** Re-audited against the shader as it
+  actually stands after the first visual pass above (the review doc itself
+  was written against an older, pre-pass shader — most of its "Goal 1
+  realistic hair" list already existed: pixel-width clamp, tangent-based
+  Kajiya-Kay, tinted two-lobe specular, root/tip darkening, per-strand
+  variation. Confirmed no `EMISSION` anywhere in `hair_ribbon.gdshader` or
+  set from C++).
+  - **Reported "too shiny/plastic, pulsing highlight" — diagnosed, not a bug.**
+    A highlight band traveling root<->tip as the light angle changes is
+    Kajiya-Kay's tangent-based specular working correctly (`babylon.tscn`'s
+    `pointLight1` has `orbit_light.gd` on it) — real hair does this under a
+    moving light. Verify by disabling the orbit script: a static light should
+    give a static highlight; if it still pulses, that's a real bug. If the
+    look is simply too glossy/bright once confirmed, that's lobe-strength
+    tuning (`specular_strength_primary/secondary` in `hair_ribbon.gdshader`),
+    not an architecture problem. Note `SlimeLight` in the scene is a green
+    omni at `light_energy = 9.0` — will bloom any specular it touches.
+  - **Self-shadowing — unverified, not confirmed broken.** The ribbon casts
+    and receives shadows by Godot's defaults (`ATTENUATION` in `light()`
+    already includes the shadow term), so coarse hair-on-hair and body-on-hair
+    shadowing should function, but nobody has visually confirmed it, and fine
+    strand-level self-shadow is inherently limited by shadow-map resolution —
+    real fine-grained self-shadow needs a dedicated technique (this is the
+    "fake multiple scattering" / contact-shadow items already in the backlog
+    above, not a new item).
+  - **Maintainer's long-term vision (stated 2026-07-16): stylized ribbons and
+    feathers, authored in Blender, mixed on one character (e.g. a harpy with
+    realistic hair + feathers, a chimera with fur + feathers), still riding
+    the TressFX sim.** Feasibility verdict: **yes, the architecture supports
+    this** — TressFX simulates guide polylines only; the sim has no idea
+    whether we render a hairline-thin strip, a wide painted ribbon, or a
+    feather vane around each guide, so nothing about the sim changes for any
+    of this.
+    - **Texture mapping modes (tile vs. fit), NEW, not yet built.** One flag
+      on `hair_ribbon.gdshader`: `tile` repeats a painted-strand-lines texture
+      along the ribbon (stylized/anime hair); `fit` stretches one texture
+      root-to-tip with no repeat (feathers, leaves). The UV coordinates
+      already exist in the shader (`UV.y` across the ribbon,
+      `v_fraction_of_strand` along it) — this is a real but small addition:
+      an albedo/alpha (and optionally normal/height) texture sample plus the
+      mode switch. Feasible today, even on the existing RatBoy `.tfx` assets.
+    - **Feather orientation, NEW, needs Phase B.** A feather must NOT face the
+      camera like a hair ribbon does — it needs an orientation frame that (1)
+      starts from an authored root normal+tangent bound to the scalp/skin,
+      (2) transports along the simulated polyline as it bends (parallel
+      transport), (3) carries the artist's authored twist. This is the one
+      genuinely new render-side subsystem: a small compute pass after the sim
+      writing a per-vertex "frame texture" (root normal transported +
+      accumulated twist) next to the existing position texture, then the
+      vertex shader orients from that instead of the camera. Needs authored
+      per-strand frame/twist data the `.tfx` format doesn't carry — real
+      feather mode has to wait for Phase B's importer (see the B roadmap
+      bullet above, "scope expanded"). A camera-facing approximation could be
+      hacked earlier but would need redoing once B lands real frames — not
+      worth it.
+    - **Mixed characters (harpy/chimera) — already structurally fine.**
+      `TressFXCharacter` already holds a *list* of hair objects
+      (`m_hairDescriptions`), each its own `TressFXHairNode` — "fur + feathers
+      + hair" is just three hair nodes with different materials/modes on one
+      character, no new plumbing needed for that part. One real gap: sim
+      tuning (stiffness/damping/etc.) is currently per-CHARACTER
+      (`m_gravity_magnitude` and siblings on `TressFXCharacter`), but feathers
+      plausibly want different stiffness than hair on the same character —
+      this needs to move to per-hair-node. Already flagged as issue H6 in
+      `NOTES.md` for unrelated reasons (VSP/iteration params not in the
+      Inspector); the fix is the same piece of work.
+    - **Known limits, not blockers:** a feather vane rides its simulated shaft
+      as a rigid surface — it won't flex independently or catch wind on its
+      own; feathers/wide ribbons don't collide with each other or stack
+      (needs the deferred velocity-grid idea, still not worth building); wide
+      ribbons will interpenetrate the body until A3.2's capsules land, and
+      capsules matter MORE once ribbons are wide.
+  - **Revised order given all of the above** (delta from the first visual
+    backlog's ordering above): shine-tuning + shadow verification first
+    (small, directly answers the reported issues) → A3.2 capsule collision
+    (unchanged position, and feathers raise its importance) → distance LOD
+    (render-only, small, AMD's own `TressFXSettings.h` LOD fields give the
+    design for free — fade a distance-driven fraction of strands while
+    widening survivors to hold coverage, no kernel/buffer changes) → texture
+    modes v1 (tile/fit + alpha/normal, still camera-facing) BEFORE Phase B, so
+    the shader's texture plumbing is proven on existing assets before feathers
+    need it → Phase B with the expanded schema, where feather mode actually
+    lands (frame-texture compute pass + oriented expansion).
 
 ## Where knowledge lives
 
