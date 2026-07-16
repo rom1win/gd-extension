@@ -84,6 +84,42 @@ heart; the C++ extension around them is the product.
 - **AMD reference vendored**: `thirdparty/tressfx/` (all needed sources, all 13 HLSL
   shaders, AMD MIT license). The untracked `TressFX/` checkout is obsolete. Never read
   either tree broadly — use `NOTES.md` first, then specific vendored files.
+- **Visual quality pass (2026-07-16, on branch `a3-animation-collision`, before A3.1
+  resumed).** The A2 ribbons looked "thick and made of light" — fixed without
+  touching the rendering architecture:
+  - `hair_fiber_radius` default halved (0.0021 → 0.001 m) and strands now taper
+    to 40% width at the tip (`tip_width_ratio`), like AMD's thin-tip feature.
+  - Specular re-tinted to match AMD's composition (`TressFXLighting.hlsl`
+    `ComputeDiffuseSpecFactors` / `TressFXPPLL.hlsl` `HairShading`): only the
+    primary (surface-reflection) lobe stays white; the secondary (light that
+    passed through the fiber) is now tinted by hair color. Untinted-white on
+    both lobes was the direct cause of the washed-out/emissive look. Diffuse
+    weight cut to 0.4x (AMD's own ratio is closer to 0.07 Kd against implicit
+    specular-dominant shading).
+  - Per-strand variation: brightness, thickness, and a soft alpha-faded tip
+    length all jitter per strand from a stable hash of strand index (two
+    decorrelated hashes — one drives color+thickness, one drives length).
+    Cheap (no new buffers), makes the coat read as organic instead of extruded.
+  - **Follow-hair radius fixed** (`src/HairStrands.cpp` `GenerateFollowHairs`
+    call): was hardcoded `maxRadiusAroundGuideHair=0.0` (NOTES.md issue H2) —
+    follow hairs were simulated and rendered but sat exactly on top of their
+    guide, invisible. New `follow_hair_radius` property on `TressFXHairNode`
+    (default 0.012 m, AMD's own sample value) fans them out; guide physics is
+    unaffected (follow hairs are a pure function of guides, and the gate
+    compares guide slots only).
+  - Sub-pixel width clamp: ribbons thinner than ~1 screen pixel widen to a 1px
+    floor and dim to compensate (in `hair_ribbon.gdshader`, using
+    `PROJECTION_MATRIX[1][1]` for vertical FOV and `VIEWPORT_SIZE.y`) — fixes
+    shimmer/flicker on thinned strands that `alpha_to_coverage` alone doesn't
+    touch (that only softens edges, not sub-pixel geometry aliasing).
+  - Fixed a spurious per-frame warning: the ribbon `ArrayMesh` (`build_ribbon_
+    mesh_if_needed` in `tressfx_character.cpp`) had no `ARRAY_TANGENT`, so
+    Godot warned every frame that the shader "requires tangents" even though
+    the vertex shader fully overwrites TANGENT/BINORMAL itself — added a
+    placeholder tangent array (values unused, immediately overwritten).
+  - **Gate status: not yet run.** The follow-hair-radius change is asset
+    cooking (physics-affecting per the hard rules) — run the regression gate
+    before committing any of this.
 - Git tags: `cpp-reference` (pre-rewrite baseline, never delete/rewrite), `gate-1`,
   `gate-2`, `gate-a1`, `gate-a2` (added at the A2 merge).
 
@@ -174,28 +210,40 @@ heart; the C++ extension around them is the product.
 
 - **A3 — animation + collision. IN PROGRESS (branch `a3-animation-collision`).**
   Two independent halves; do them in this order.
-  - **A3.1 — animation. STARTED; open problem below.** babylon.tscn has NO
-    AnimationPlayer (the source glTF `demo/Meshes/RatBoy/babylon.gltf` has one
-    clip, "All Animations", but it was never carried into the hand-assembled
-    scene). Instead, `demo/head_shake.gd` (attached to the Skeleton3D in
-    babylon.tscn) procedurally shakes `frenchHornMonster_head_JNT` — this IS
-    the Gate A3 stress test. **OPEN PROBLEM:** with the default 35°/2 Hz shake
-    the solver explodes and the hair vanishes (NaN/inf positions make the GPU
-    discard the ribbons — the failure looks like sudden baldness, not visible
-    chaos). The scene currently ships with `shaking = false` on the Skeleton3D
-    node; flip it to true to reproduce. The fix is stabilizing the sim under
-    fast bone motion, NOT weakening the test. Candidate causes to investigate,
-    in order: (1) variable per-frame dt feeding the solver while bones jump
-    far per frame (try fixed dt first to isolate); (2) start gentle — find the
-    amplitude/frequency where instability begins (edit exported vars on the
-    Skeleton3D node) to learn whether it's a cliff or gradual; (3) the AMD
-    reference clamps per-step motion (`g_ClampPositionDelta = 20`, set in
-    `TressFXHairObject.cpp::UpdateSimulationParameters`) — check the GLSL
-    kernels actually apply it the way `TressFXSimulation.hlsl` does; (4) VSP
-    (velocity shock propagation) parameters exist precisely for fast head
-    motion — check NOTES.md §6 and the VSP kernel inputs. Check when fixed:
-    F5 with `shaking = true` — hair swings believably, roots stay glued, no
-    disappearance, for at least 30 seconds.
+  - **A3.1 — animation. CORE FIXED (2026-07-16), maintainer-verified: 35°/2 Hz
+    shake with roots glued, believable bending, no vanishing.** babylon.tscn
+    has NO AnimationPlayer (the source glTF has one clip, "All Animations",
+    never carried into the hand-assembled scene); `demo/head_shake.gd` on the
+    Skeleton3D procedurally shakes `frenchHornMonster_head_JNT` and IS the
+    Gate A3 stress test. **The old "solver explodes under fast bone motion"
+    theory was WRONG** — the solver was never unstable (a readback watchdog
+    showed perfectly finite, smooth positions throughout). It was two wiring
+    bugs, invisible on a never-animated skeleton and fatal on the first real
+    pose write:
+    1. **Render mount double-transform** (`update_gpu_debug_hair_lines_3d_
+       transform`): the ribbon mesh was parented to a root-bone
+       `BoneAttachment3D`, but sim output is in SKELETON MODEL SPACE — bone
+       motion already lives in the skinning matrices. A never-dirtied skeleton
+       never updates its attachments (accidentally correct); the first pose
+       write snapped the anchor to the root joint's saved pose and teleported
+       all hair ("vanished"). Fix: mount = the Skeleton3D's global transform.
+    2. **Stale bone matrices** (`EI_Scene::GetWorldSpaceSkeletonMats`): the
+       skinning-matrix cache was keyed on `Skeleton3D::get_version()`, which
+       only bumps on STRUCTURAL changes, never on pose changes — so startup
+       matrices were served forever and animation never reached the sim
+       (roots didn't follow the head). Fix: recompute every call (~100
+       matrices/frame, trivial).
+    Diagnostics added during this hunt, kept on purpose: a one-shot NaN/
+    teleport watchdog on the readback path (prints "TressFX WATCHDOG" once if
+    positions/bones ever go bad — tripwire for A3.2), `debug_force_fixed_dt`
+    on TressFXCharacter (forces dt=1/60 with real bones, isolates dt effects),
+    and `clamp_position_delta` on TressFXCharacter (AMD's g_ClampPositionDelta
+    was hardcoded 20 — sane in AMD's cm-scale world, never fires at our meter
+    scale; now plumbed, default 20 = unchanged behavior, available as a
+    stabilizer if violent motion ever needs it).
+    Still open for A3.1 polish (non-blocking): scene ships `shaking = false`;
+    real AnimationPlayer clip playback hasn't been exercised yet (only the
+    procedural shake) — worth a quick test when convenient.
   - **A3.2 — capsule collision.** Port the collision-capsule block (~40 lines,
     `CapsuleCollision()` + its call site) from vendored `TressFXSimulation.hlsl` into
     `TressFXSimulation.LengthConstriantsWindAndCollision.comp.glsl`. This IS a kernel
@@ -229,6 +277,47 @@ heart; the C++ extension around them is the product.
   readback, no callers since A1) — delete. `EI_Device::RunSelfTestOnce` submits/syncs
   on whatever `get_rd()` returns, which since A1 is the MAIN RD — guard it against the
   main RD (or delete) before anyone wires it to a button.
+- **Visual quality backlog** (from a maintainer-provided proposal doc, sorted
+  2026-07-16; goal is "the most beautiful hairs," maintainer will show this to
+  other people eventually). Items already done are listed above under "Visual
+  quality pass" — not repeated here. Remaining, roughly in the order they're
+  worth doing:
+  - **Fake multiple scattering** (light-colored hair glows instead of flat
+    gray). No payoff on RatBoy's brown fur — do this once a lighter-colored
+    test asset exists (Phase B, maintainer's own Blender character), alongside
+    the TT/backlight lobe (currently only R + TRT lobes are implemented).
+  - **Curl-noise wind** (replace directional wind with 3D turbulence for
+    livelier idle motion). This is a **simulation change** (kernel input), so
+    it needs an audit note + green regression gate — do it after A3 lands, not
+    while A3.1's stability bug is still open (an unstable solver is a bad time
+    to add more motion energy to debug against).
+  - **Screen-space contact shadows** (micro-shadows where hair meets skin,
+    Bend Studio technique, no ray tracing needed). Plausible as a Godot
+    CompositorEffect. First confirm the basics the maintainer already
+    questioned: does RatBoy's body actually cast a shadow onto the hair, and
+    does the hair self-shadow? Cheap checks before building custom shadow tech.
+  - **CAS sharpening.** Not a hair feature — a project-level post-process
+    setting. Demo-scene tweak at most; lowest priority on this list.
+  - **XPBD (compliance term for constraint stiffness).** Rejected for now:
+    this rewrites the constraint math inside the six audited GLSL kernels,
+    which are line-by-line faithful ports of AMD's reference — that fidelity
+    is the point of `AUDIT_KERNELS.md` and the regression baseline. XPBD's
+    benefit (tuning stability independent of iteration count/timestep) is a
+    convenience, not a visual win, and it invalidates both the audit and the
+    baseline. Only reconsider if A3.1's stability work proves the AMD solver
+    itself can't be made to cope with fast bone motion.
+  - **Velocity grid (hair-vs-hair interaction / cohesion).** A whole new
+    simulation subsystem (3D grid build + scatter/gather passes) that AMD's
+    own TressFX never shipped. Real payoff mostly on long flowing hair, minor
+    on short fur like RatBoy's. Revisit after Phase B if ever, not before.
+  - **ShortCut OIT** (proper transparency sort for dense semi-transparent
+    strands). AMD's vendored code exists but needs custom render passes that
+    fight Godot's pipeline — big lift for a benefit that only shows in extreme
+    close-ups on light hair. Current MSAA + `alpha_to_coverage` is the
+    standard budget answer; revisit at Phase C if close-ups look wrong.
+  - **SDF collision** (precise body-shaped collision vs. capsules). The
+    roadmap already scopes this correctly under A3.2: capsules first, SDF only
+    if capsules visibly fail scalp penetration.
 
 ## Where knowledge lives
 
