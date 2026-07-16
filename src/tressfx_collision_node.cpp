@@ -8,6 +8,9 @@
 #include <vector>
 #include <godot_cpp/classes/skeleton3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/sphere_mesh.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
 #include "tressfx_character.h"
 
 using namespace godot;
@@ -35,12 +38,32 @@ void TressFXCollisionNode::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_skeleton_node_path", "p"), &TressFXCollisionNode::set_skeleton_node_path);
     ClassDB::bind_method(D_METHOD("get_skeleton_node_path"), &TressFXCollisionNode::get_skeleton_node_path);
 
+    ClassDB::bind_method(D_METHOD("set_capsule_enabled", "p"), &TressFXCollisionNode::set_capsule_enabled);
+    ClassDB::bind_method(D_METHOD("get_capsule_enabled"), &TressFXCollisionNode::get_capsule_enabled);
+    ClassDB::bind_method(D_METHOD("set_capsule_point_a", "p"), &TressFXCollisionNode::set_capsule_point_a);
+    ClassDB::bind_method(D_METHOD("get_capsule_point_a"), &TressFXCollisionNode::get_capsule_point_a);
+    ClassDB::bind_method(D_METHOD("set_capsule_point_b", "p"), &TressFXCollisionNode::set_capsule_point_b);
+    ClassDB::bind_method(D_METHOD("get_capsule_point_b"), &TressFXCollisionNode::get_capsule_point_b);
+    ClassDB::bind_method(D_METHOD("set_capsule_radius_a", "p"), &TressFXCollisionNode::set_capsule_radius_a);
+    ClassDB::bind_method(D_METHOD("get_capsule_radius_a"), &TressFXCollisionNode::get_capsule_radius_a);
+    ClassDB::bind_method(D_METHOD("set_capsule_radius_b", "p"), &TressFXCollisionNode::set_capsule_radius_b);
+    ClassDB::bind_method(D_METHOD("get_capsule_radius_b"), &TressFXCollisionNode::get_capsule_radius_b);
+    ClassDB::bind_method(D_METHOD("set_show_debug_capsule", "p"), &TressFXCollisionNode::set_show_debug_capsule);
+    ClassDB::bind_method(D_METHOD("get_show_debug_capsule"), &TressFXCollisionNode::get_show_debug_capsule);
+
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_mesh_file", PROPERTY_HINT_FILE, "*.tfxmesh"), "set_tfx_mesh_file", "get_tfx_mesh_file");
     ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "skeleton_node_path"), "set_skeleton_node_path", "get_skeleton_node_path");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "numCellsInXAxis"), "set_num_cells_in_x", "get_num_cells_in_x");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collisionMargin"), "set_collision_margin", "get_collision_margin");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "mesh"), "set_mesh", "get_mesh");
     // followBone is provided dynamically via _get_property_list so the inspector can present an up-to-date enum
+
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "capsule_enabled"), "set_capsule_enabled", "get_capsule_enabled");
+    ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "capsule_point_a"), "set_capsule_point_a", "get_capsule_point_a");
+    ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "capsule_point_b"), "set_capsule_point_b", "get_capsule_point_b");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "capsule_radius_a", PROPERTY_HINT_RANGE, "0.001,1.0,0.001"), "set_capsule_radius_a", "get_capsule_radius_a");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "capsule_radius_b", PROPERTY_HINT_RANGE, "0.001,1.0,0.001"), "set_capsule_radius_b", "get_capsule_radius_b");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_debug_capsule"), "set_show_debug_capsule", "get_show_debug_capsule");
 }
 
 TressFXCollisionNode::TressFXCollisionNode() {
@@ -56,6 +79,10 @@ void TressFXCollisionNode::_ready() {
 	if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
 		return;
 	}
+
+    // Drives the show_debug_capsule authoring aid (see _process); never runs
+    // under the editor (guarded again inside _process for safety).
+    set_process(true);
 
     // Populate a minimal collision description and register it with parent character if present
     last_collision_description.name = String("collision");
@@ -108,6 +135,10 @@ void TressFXCollisionNode::_ready() {
             } else {
                 UtilityFunctions::print(String("TressFXCollisionNode: tfx_mesh_file empty; skipping registration."));
             }
+            // Capsule authoring is independent of tfx_mesh_file (a node can be
+            // capsule-only); the character dedupes by pointer so this and
+            // register_to_character() both calling it is harmless.
+            character->register_capsule_node(this);
             break;
         }
         p = p->get_parent();
@@ -192,6 +223,7 @@ void TressFXCollisionNode::register_to_character(TressFXCharacter *character) {
         } else {
             UtilityFunctions::print(String("TressFXCollisionNode::register_to_character: tfx_mesh_file empty; skipping registration."));
         }
+        character->register_capsule_node(this);
     }
 }
 
@@ -262,4 +294,147 @@ Array TressFXCollisionNode::find_bones() {
     }
 
     return results;
+}
+
+bool TressFXCollisionNode::get_capsule_data(Vector3 &out_a, float &out_radius_a,
+                                             Vector3 &out_b, float &out_radius_b) const {
+    if (!capsule_enabled) {
+        return false;
+    }
+    if (skeleton_node_path.is_empty() || followBone.is_empty()) {
+        return false;
+    }
+
+    Node *n = get_node_or_null(skeleton_node_path);
+    Skeleton3D *sk = Object::cast_to<Skeleton3D>(n);
+    if (!sk) {
+        return false;
+    }
+    const int32_t bone_idx = sk->find_bone(followBone);
+    if (bone_idx < 0) {
+        return false;
+    }
+
+    // Same space the sim's own vertex positions end up in after skinning
+    // (see TressFXCharacter::update_gpu_debug_hair_lines_3d_transform) -- do
+    // NOT also multiply by the skeleton's global_transform here, that only
+    // applies at the final render mount.
+    const Transform3D pose = sk->get_bone_global_pose(bone_idx);
+    out_a = pose.xform(capsule_point_a);
+    out_b = pose.xform(capsule_point_b);
+    out_radius_a = capsule_radius_a;
+    out_radius_b = capsule_radius_b;
+    return true;
+}
+
+void TressFXCollisionNode::set_show_debug_capsule(bool p) {
+    show_debug_capsule = p;
+    if (!show_debug_capsule) {
+        clear_debug_capsule_visual();
+    }
+}
+
+void TressFXCollisionNode::_process(double delta) {
+    if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
+        return;
+    }
+    if (!show_debug_capsule) {
+        return;
+    }
+    update_debug_capsule_visual();
+}
+
+void TressFXCollisionNode::ensure_debug_capsule_visual() {
+    if (m_debug_sphere_a && m_debug_sphere_b) {
+        return;
+    }
+
+    Ref<StandardMaterial3D> mat;
+    mat.instantiate();
+    mat->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
+    mat->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
+    mat->set_albedo(Color(1.0f, 0.2f, 0.9f, 0.35f));
+
+    if (!m_debug_sphere_a) {
+        m_debug_sphere_mesh_a.instantiate();
+        MeshInstance3D *mi = memnew(MeshInstance3D);
+        mi->set_name("TressFXDebugCapsuleA");
+        mi->set_mesh(m_debug_sphere_mesh_a);
+        mi->set_material_override(mat);
+        add_child(mi);
+        m_debug_sphere_a = mi;
+    }
+    if (!m_debug_sphere_b) {
+        m_debug_sphere_mesh_b.instantiate();
+        MeshInstance3D *mi = memnew(MeshInstance3D);
+        mi->set_name("TressFXDebugCapsuleB");
+        mi->set_mesh(m_debug_sphere_mesh_b);
+        mi->set_material_override(mat);
+        add_child(mi);
+        m_debug_sphere_b = mi;
+    }
+}
+
+void TressFXCollisionNode::clear_debug_capsule_visual() {
+    if (m_debug_sphere_a) {
+        m_debug_sphere_a->queue_free();
+        m_debug_sphere_a = nullptr;
+        m_debug_sphere_mesh_a.unref();
+        m_debug_sphere_applied_radius_a = -1.0f;
+    }
+    if (m_debug_sphere_b) {
+        m_debug_sphere_b->queue_free();
+        m_debug_sphere_b = nullptr;
+        m_debug_sphere_mesh_b.unref();
+        m_debug_sphere_applied_radius_b = -1.0f;
+    }
+}
+
+void TressFXCollisionNode::update_debug_capsule_visual() {
+    Vector3 a, b;
+    float ra = 0.0f, rb = 0.0f;
+    if (!get_capsule_data(a, ra, b, rb)) {
+        clear_debug_capsule_visual();
+        return;
+    }
+
+    Node *n = get_node_or_null(skeleton_node_path);
+    Skeleton3D *sk = Object::cast_to<Skeleton3D>(n);
+    if (!sk) {
+        clear_debug_capsule_visual();
+        return;
+    }
+
+    // get_capsule_data() returns endpoints in SKELETON MODEL SPACE (for the
+    // sim); the debug spheres are ordinary world-space nodes, so mount them
+    // via the skeleton's own global transform (same convention as the ribbon
+    // render mount).
+    const Transform3D skel_xform = sk->get_global_transform();
+    const Vector3 world_a = skel_xform.xform(a);
+    const Vector3 world_b = skel_xform.xform(b);
+
+    ensure_debug_capsule_visual();
+
+    m_debug_sphere_a->set_global_position(world_a);
+    m_debug_sphere_b->set_global_position(world_b);
+
+    // Root cause of the runtime crash on weaker/integrated GPUs (Intel Iris
+    // Xe): PrimitiveMesh::set_radius/set_height unconditionally re-tessellate
+    // the sphere and re-upload it to the RenderingServer. Calling them every
+    // _process() tick regenerated+re-uploaded an unchanged mesh 60x/sec,
+    // forever, on top of the hair-sim GPU load -- fine on a strong discrete
+    // GPU, enough sustained churn to crash a weaker one after a few seconds.
+    // Only touch the mesh when the authored radius actually changed (still
+    // live-editable from the Remote inspector: next tick after a Set call
+    // this differs from the cached value and re-applies once).
+    if (m_debug_sphere_mesh_a.is_valid() && ra != m_debug_sphere_applied_radius_a) {
+        m_debug_sphere_mesh_a->set_radius(ra);
+        m_debug_sphere_mesh_a->set_height(ra * 2.0f);
+        m_debug_sphere_applied_radius_a = ra;
+    }
+    if (m_debug_sphere_mesh_b.is_valid() && rb != m_debug_sphere_applied_radius_b) {
+        m_debug_sphere_mesh_b->set_radius(rb);
+        m_debug_sphere_mesh_b->set_height(rb * 2.0f);
+        m_debug_sphere_applied_radius_b = rb;
+    }
 }

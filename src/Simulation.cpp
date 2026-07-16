@@ -110,6 +110,24 @@ void Simulation::StartSimulation(
     settings.m_gravityMagnitude           = ctx.gravityMagnitude;
     settings.m_tipSeparation              = ctx.tipSeparation;
     settings.m_clampPositionDelta         = ctx.clampPositionDelta;
+#if TRESSFX_COLLISION_CAPSULES
+    {
+        const int numCapsules = std::min((int)ctx.collisionCapsules.size(), (int)TRESSFX_MAX_NUM_COLLISION_CAPSULES);
+        settings.m_numCollisionCapsules = numCapsules;
+        for (int i = 0; i < numCapsules; ++i) {
+            const CollisionCapsuleData& c = ctx.collisionCapsules[i];
+            TressFXCapsuleCollider& out = settings.m_collisionCapsules[i];
+            out.centerA[0] = (float)c.center_a.x;
+            out.centerA[1] = (float)c.center_a.y;
+            out.centerA[2] = (float)c.center_a.z;
+            out.radiusA    = c.radius_a;
+            out.centerB[0] = (float)c.center_b.x;
+            out.centerB[1] = (float)c.center_b.y;
+            out.centerB[2] = (float)c.center_b.z;
+            out.radiusB    = c.radius_b;
+        }
+    }
+#endif
     {
         const godot::Vector3 w = ctx.wind_velocity;
         const float mag = (float)w.length();

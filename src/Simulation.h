@@ -18,6 +18,16 @@
 class HairStrands;
 class CollisionMesh;
 
+// A3.2 subtask B: one capsule collider, already resolved to SKELETON MODEL
+// SPACE (same frame as the bone skinning matrices) on the MAIN thread by
+// TressFXCollisionNode::get_capsule_data before it is snapshotted here.
+struct CollisionCapsuleData {
+    godot::Vector3 center_a;
+    float radius_a = 0.0f;
+    godot::Vector3 center_b;
+    float radius_b = 0.0f;
+};
+
 struct SimulationContext {
     std::vector<HairStrands*> hairStrands;
     std::vector<CollisionMesh*> collisionMeshes;
@@ -47,6 +57,10 @@ struct SimulationContext {
     // fires. Kept at 20 by default (= AMD behavior, gate-identical); lower it
     // to engage the clamp (A3.1 fast-bone-motion stability).
     float clampPositionDelta          = 20.0f;
+
+    // Empty when TressFXCharacter::collision_enabled is false. Capped at
+    // TRESSFX_MAX_NUM_COLLISION_CAPSULES (8) by the caller.
+    std::vector<CollisionCapsuleData> collisionCapsules;
 };
 
 class Simulation {

@@ -431,16 +431,20 @@ void TressFXHairObject::UpdateSimulationParameters(const TressFXSimulationSettin
 #if TRESSFX_COLLISION_CAPSULES
     // [gd-extension patch] AMD's original line here (`m_SimCB.m_numCollisionCapsules.x
     // = 0;`) doesn't compile: m_SimCB is the ping-pong array, not a pointer to the
-    // struct (never caught because this guard was always off upstream). Shipped
-    // inert until A3.2 subtask B wires a real capsule count from a scene node.
-    m_SimCB[m_SimulationFrame % 2]->m_numCollisionCapsules.x = 0;
-
-    // Below is an example showing how to pass capsule collision objects.
-    /*
-    mSimCB.m_numCollisionCapsules.x = 1;
-    mSimCB.m_centerAndRadius0[0] = { 0, 0.f, 0.f, 50.f };
-    mSimCB.m_centerAndRadius1[0] = { 0, 100.f, 0, 10.f };
-    */
+    // struct (never caught because this guard was always off upstream).
+    //
+    // A3.2 subtask B: real capsule data flows TressFXCollisionNode (main thread,
+    // resolved to SKELETON MODEL SPACE) -> SimulationContext::collisionCapsules
+    // -> TressFXSimulationSettings -> here. Count is 0 whenever
+    // TressFXCharacter::collision_enabled is false, matching AMD's inert default.
+    const int numCapsules = min((int)settings->m_numCollisionCapsules, (int)TRESSFX_MAX_NUM_COLLISION_CAPSULES);
+    m_SimCB[m_SimulationFrame % 2]->m_numCollisionCapsules.x = numCapsules;
+    for (int i = 0; i < numCapsules; ++i)
+    {
+        const TressFXCapsuleCollider& c = settings->m_collisionCapsules[i];
+        m_SimCB[m_SimulationFrame % 2]->m_centerAndRadius0[i] = { c.centerA[0], c.centerA[1], c.centerA[2], c.radiusA };
+        m_SimCB[m_SimulationFrame % 2]->m_centerAndRadius1[i] = { c.centerB[0], c.centerB[1], c.centerB[2], c.radiusB };
+    }
 #endif
     // make sure we start of with a correct pose
     if (m_SimulationFrame < 2)

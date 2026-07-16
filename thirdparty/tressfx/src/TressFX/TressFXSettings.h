@@ -26,10 +26,26 @@
 #ifndef _TRESSFXSIMULATIONPARAMS_H_
 #define _TRESSFXSIMULATIONPARAMS_H_
 #include "imgui.h"
+// [gd-extension] needed for TRESSFX_COLLISION_CAPSULES / TRESSFX_MAX_NUM_COLLISION_CAPSULES
+// so this header is self-sufficient regardless of include order.
+#include "TressFXCommon.h"
 
 #include <memory>
 
 class HairStrands;
+
+#if TRESSFX_COLLISION_CAPSULES
+// [gd-extension] A3.2 subtask B: one capsule collider, already resolved to
+// SKELETON MODEL SPACE by TressFXCollisionNode::get_capsule_data (same frame
+// as m_BoneSkinningMatrix) before it reaches here.
+struct TressFXCapsuleCollider
+{
+    float centerA[3] = { 0.f, 0.f, 0.f };
+    float radiusA    = 0.f;
+    float centerB[3] = { 0.f, 0.f, 0.f };
+    float radiusB    = 0.f;
+};
+#endif
 
 // Probably want to unify or rename these.
 class TressFXSimulationSettings
@@ -84,6 +100,13 @@ public:
     float m_windDirection[3];
     float m_windAngleRadians;
     float m_clampPositionDelta;
+
+#if TRESSFX_COLLISION_CAPSULES
+    // A3.2 subtask B: 0 = inert (AMD's shipped default; also the state whenever
+    // TressFXCharacter::collision_enabled is false).
+    int m_numCollisionCapsules = 0;
+    TressFXCapsuleCollider m_collisionCapsules[TRESSFX_MAX_NUM_COLLISION_CAPSULES];
+#endif
 };
 
 class EI_Resource;

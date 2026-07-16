@@ -123,6 +123,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_clamp_position_delta"), &TressFXCharacter::get_clamp_position_delta);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "clamp_position_delta", PROPERTY_HINT_RANGE, "0.001,20.0,0.001"), "set_clamp_position_delta", "get_clamp_position_delta");
 
+    ClassDB::bind_method(D_METHOD("set_collision_enabled", "v"), &TressFXCharacter::set_collision_enabled);
+    ClassDB::bind_method(D_METHOD("get_collision_enabled"), &TressFXCharacter::get_collision_enabled);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "collision_enabled"), "set_collision_enabled", "get_collision_enabled");
+
     ClassDB::bind_method(D_METHOD("set_hair_fiber_radius", "v"), &TressFXCharacter::set_hair_fiber_radius);
     ClassDB::bind_method(D_METHOD("get_hair_fiber_radius"), &TressFXCharacter::get_hair_fiber_radius);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "hair_fiber_radius", PROPERTY_HINT_RANGE, "0.0001,0.02,0.0001"), "set_hair_fiber_radius", "get_hair_fiber_radius");
@@ -275,6 +279,42 @@ void TressFXCharacter::_process(double delta) {
         params[7] = m_local_stiffness;
         params[8] = m_clamp_position_delta;
 
+        // A3.2 subtask B: resolve each registered capsule's current pose on
+        // THIS (main) thread -- Skeleton3D::get_bone_global_pose must not be
+        // called from the render thread. Packed as 8 floats/capsule
+        // (xyz_a, radius_a, xyz_b, radius_b); count 0 whenever collision is
+        // off, which keeps the regression gate byte-for-byte unaffected.
+        PackedFloat32Array capsule_data;
+        if (m_collision_enabled && !m_gate_capture_mode) {
+            int count = 0;
+            for (TressFXCollisionNode* node : m_capsuleNodes) {
+                if (!node) {
+                    continue;
+                }
+                Vector3 a, b;
+                float ra = 0.0f, rb = 0.0f;
+                if (!node->get_capsule_data(a, ra, b, rb)) {
+                    continue;
+                }
+                if (count >= 8) {
+                    if (!m_capsule_overflow_warned) {
+                        m_capsule_overflow_warned = true;
+                        UtilityFunctions::push_warning("TressFXCharacter: more than 8 enabled collision capsules; extras ignored (TRESSFX_MAX_NUM_COLLISION_CAPSULES=8).");
+                    }
+                    break;
+                }
+                capsule_data.push_back((float)a.x);
+                capsule_data.push_back((float)a.y);
+                capsule_data.push_back((float)a.z);
+                capsule_data.push_back(ra);
+                capsule_data.push_back((float)b.x);
+                capsule_data.push_back((float)b.y);
+                capsule_data.push_back((float)b.z);
+                capsule_data.push_back(rb);
+                count++;
+            }
+        }
+
         const double dt = (m_gate_capture_mode || m_debug_force_fixed_dt) ? (1.0 / 60.0) : delta;
 
         m_sim_steps++;
@@ -291,7 +331,7 @@ void TressFXCharacter::_process(double delta) {
         RenderingServer::get_singleton()->call_on_render_thread(
             callable_mp(this, &TressFXCharacter::_rt_sim_tick)
                 .bind(dt, params, bones_per_hair, hair_ptrs,
-                      (int64_t)(intptr_t)m_pSimulation.get(), gate_dump_frame));
+                      (int64_t)(intptr_t)m_pSimulation.get(), gate_dump_frame, capsule_data));
     }
 
     // Consume the latest async readback. Guide positions arrive one or two
@@ -367,7 +407,8 @@ void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Arra
 
 void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         const Array& bones_per_hair, const PackedInt64Array& hair_ptrs,
-        int64_t sim_ptr, int64_t gate_dump_frame) {
+        int64_t sim_ptr, int64_t gate_dump_frame,
+        const PackedFloat32Array& capsule_data) {
     // RENDER thread. Inputs arrive by value; the sim/hair pointers stay valid
     // because teardown_gpu_runtime queues destruction behind this call (FIFO).
     Simulation* sim = reinterpret_cast<Simulation*>((intptr_t)sim_ptr);
@@ -394,6 +435,19 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
     }
     if (params.size() >= 9) {
         ctx.clampPositionDelta        = params[8];
+    }
+
+    // A3.2 subtask B: 8 floats per capsule (xyz_a, radius_a, xyz_b, radius_b),
+    // already resolved to SKELETON MODEL SPACE on the main thread. Empty
+    // whenever collision_enabled is false (see _process).
+    const int64_t numCapsuleFloats = capsule_data.size() - (capsule_data.size() % 8);
+    for (int64_t i = 0; i + 8 <= numCapsuleFloats; i += 8) {
+        CollisionCapsuleData c;
+        c.center_a = Vector3(capsule_data[i + 0], capsule_data[i + 1], capsule_data[i + 2]);
+        c.radius_a = capsule_data[i + 3];
+        c.center_b = Vector3(capsule_data[i + 4], capsule_data[i + 5], capsule_data[i + 6]);
+        c.radius_b = capsule_data[i + 7];
+        ctx.collisionCapsules.push_back(c);
     }
 
     // A3.1 watchdog, input side: are the bone matrices we are about to feed
@@ -579,6 +633,20 @@ void TressFXCharacter::register_collision_description(const TressFXHairNode::Tre
         String(" followBone='") + desc.followBone +
         String("' skeleton_node_path='") + desc.skeleton_node_path +
         String("'"));
+}
+
+void TressFXCharacter::register_capsule_node(TressFXCollisionNode *node) {
+    if (!node) {
+        return;
+    }
+    // Both TressFXCollisionNode::_ready() and the discovery loop in this
+    // node's own _ready() can register the same node; dedupe by identity.
+    for (TressFXCollisionNode* existing : m_capsuleNodes) {
+        if (existing == node) {
+            return;
+        }
+    }
+    m_capsuleNodes.push_back(node);
 }
 
 void TressFXCharacter::load_all_assets() {
@@ -843,6 +911,9 @@ float TressFXCharacter::get_local_stiffness() const { return m_local_stiffness; 
 
 void TressFXCharacter::set_clamp_position_delta(float v) { m_clamp_position_delta = v; }
 float TressFXCharacter::get_clamp_position_delta() const { return m_clamp_position_delta; }
+
+void TressFXCharacter::set_collision_enabled(bool v) { m_collision_enabled = v; }
+bool TressFXCharacter::get_collision_enabled() const { return m_collision_enabled; }
 
 void TressFXCharacter::set_hair_fiber_radius(float v) {
     m_hair_fiber_radius = v;

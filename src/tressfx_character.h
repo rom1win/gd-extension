@@ -23,6 +23,7 @@
 using namespace godot;
 
 class EI_Scene;
+class TressFXCollisionNode;
 
 namespace godot {
 class Skeleton3D;
@@ -51,6 +52,9 @@ public:
     // Registration API used by child hair/collision nodes
     void register_hair_description(const TressFXHairNode::TressFXObjectDescription &desc);
     void register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc);
+    // A3.2 subtask B: capsule-authoring nodes register themselves (by pointer,
+    // deduped) so _process() can poll their live current pose every frame.
+    void register_capsule_node(TressFXCollisionNode *node);
 
     // Trigger creation of the TressFX runtime objects (stub for now)
     void load_all_assets();
@@ -96,6 +100,11 @@ public:
     void set_global_range(float v);      float get_global_range() const;
     void set_local_stiffness(float v);   float get_local_stiffness() const;
     void set_clamp_position_delta(float v); float get_clamp_position_delta() const;
+
+    // A3.2 subtask B: master switch for capsule collision. Off by default;
+    // capsules registered by child TressFXCollisionNode nodes are only
+    // gathered and sent to the sim when this is true.
+    void set_collision_enabled(bool v); bool get_collision_enabled() const;
 
     // A2.2: ribbon half-width in meters (TressFX FiberRadius convention).
     void set_hair_fiber_radius(float v); float get_hair_fiber_radius() const;
@@ -161,6 +170,15 @@ private:
     // 20 = AMD's default = effectively OFF at meter scale (see Simulation.h).
     float m_clamp_position_delta = 20.0f;
 
+    // A3.2 subtask B: capsule collision master switch, off by default.
+    bool m_collision_enabled = false;
+    // Registered by TressFXCollisionNode children (see register_capsule_node);
+    // polled on the main thread every _process() to build the per-tick capsule
+    // snapshot. Not owned; nodes outlive this vector for the demo's usage
+    // pattern (direct children of this character).
+    std::vector<TressFXCollisionNode*> m_capsuleNodes;
+    bool m_capsule_overflow_warned = false;
+
     // Cached packed guide positions for optional legacy 2D overlay texture output.
     godot::PackedByteArray m_last_guide_positions_bytes;
     int m_last_vertices_per_strand = 0;
@@ -220,7 +238,8 @@ private:
     void _rt_initialize_gpu(int64_t sim_ptr, const godot::PackedInt64Array& hair_ptrs);
     void _rt_sim_tick(double dt, const godot::PackedFloat32Array& params,
         const godot::Array& bones_per_hair, const godot::PackedInt64Array& hair_ptrs,
-        int64_t sim_ptr, int64_t gate_dump_frame);
+        int64_t sim_ptr, int64_t gate_dump_frame,
+        const godot::PackedFloat32Array& capsule_data);
     // Async-readback callbacks (fire on the render thread; only stash data).
     void _on_positions_async(const godot::PackedByteArray& data);
     void _on_gate_dump_async(const godot::PackedByteArray& data, int64_t frame);
