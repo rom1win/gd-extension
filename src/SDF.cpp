@@ -141,14 +141,16 @@ CollisionMesh::CollisionMesh(
     int numCellsInXAxis,
     float SDFCollMargin,
     int skinNumber,
-    const char* followBone)
+    const char* followBone,
+    int sdfPaddingCells)
     : m_pScene(scene),
       m_name(name ? name : ""),
       m_tfxmeshFilePath(tfxmeshFilePath ? tfxmeshFilePath : ""),
       m_followBone(followBone ? followBone : ""),
       m_numCellsInXAxis(numCellsInXAxis),
       m_SDFCollMargin(SDFCollMargin),
-      m_skinNumber(skinNumber) {
+      m_skinNumber(skinNumber),
+      m_sdfPaddingCells(sdfPaddingCells > 0 ? sdfPaddingCells : 40) {
     (void)renderPass;
 
     godot::UtilityFunctions::print(
@@ -566,11 +568,15 @@ bool CollisionMesh::EnsureSDFPSOCreated() {
     const godot::Vector3 bmin = m_aabbMin;
     const godot::Vector3 bmax = m_aabbMax;
     m_cellSize = (bmax.x - bmin.x) / (float)m_numCellsInXAxis;
-    const int numExtraPaddingCells = (int)(0.8f * (float)m_numCellsInXAxis);
-    // AMD's constructor applies this padding uniformly on all three axes: its
-    // `m_PaddingBoundary = n*cellSize, n*cellSize, n*cellSize;` is a
-    // comma-operator scalar assignment (Vector3::operator=(float) broadcasts
-    // to all three components), not a 3-argument constructor call.
+    // AMD's constructor derives this as 0.8*numCellsInXAxis and applies it
+    // uniformly on all three axes (its `m_PaddingBoundary = n*cellSize,
+    // n*cellSize, n*cellSize;` is a comma-operator scalar assignment --
+    // Vector3::operator=(float) broadcasts to all three components, not a
+    // 3-argument constructor call). We expose the cell count directly as
+    // `sdf_padding_cells` (SDF follow-up: voxel debug view + tunable padding)
+    // instead of hardcoding AMD's derivation; default 40 reproduces it
+    // exactly at this scene's default numCellsInXAxis=50.
+    const int numExtraPaddingCells = m_sdfPaddingCells;
     m_paddingBoundary = godot::Vector3(1.0f, 1.0f, 1.0f) * ((float)numExtraPaddingCells * m_cellSize);
 
     const godot::Vector3 paddedMin = bmin - m_paddingBoundary;

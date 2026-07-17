@@ -13,6 +13,7 @@
 #include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_int64_array.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "tressfx_node.h"
@@ -23,6 +24,7 @@
 using namespace godot;
 
 class EI_Scene;
+class TressFXCollisionNode;
 
 namespace godot {
 class Skeleton3D;
@@ -32,6 +34,9 @@ class Node3D;
 class BoneAttachment3D;
 class ArrayMesh;
 class ShaderMaterial;
+class MultiMesh;
+class MultiMeshInstance3D;
+class BoxMesh;
 }
 
 class TressFXCharacter : public Node3D {
@@ -50,7 +55,10 @@ public:
 
     // Registration API used by child hair/collision nodes
     void register_hair_description(const TressFXHairNode::TressFXObjectDescription &desc);
-    void register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc);
+    // node: owning TressFXCollisionNode, kept (not owned) so the SDF debug
+    // voxel view can read its show_sdf_debug toggle and parent a
+    // MultiMeshInstance3D under it. May be null for legacy callers.
+    void register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc, TressFXCollisionNode *node = nullptr);
 
     // Trigger creation of the TressFX runtime objects (stub for now)
     void load_all_assets();
@@ -133,6 +141,17 @@ private:
     // Each adapter needs a stable EI_Scene (and thus stable Skeleton3D pointer).
     // Node-driven configuration should decide which skeleton is used.
     std::vector<std::unique_ptr<EI_Scene>> m_adapterScenes;
+
+    // Parallel to m_collisionDescriptions (index-aligned, not owned): the
+    // TressFXCollisionNode each description came from, so the SDF debug voxel
+    // view can read its show_sdf_debug toggle and parent its MultiMeshInstance3D
+    // under it.
+    std::vector<TressFXCollisionNode*> m_collisionNodes;
+    // Parallel to m_collisionMeshes (index-aligned, not owned): the skeleton
+    // resolved for that mesh in load_all_assets, reused as the SDF debug
+    // MultiMesh's mount transform (same convention as update_gpu_debug_hair_
+    // lines_3d_transform -- grid origin is in skeleton model space).
+    std::vector<godot::Skeleton3D*> m_collisionSkeletons;
 
     std::unique_ptr<Simulation> m_pSimulation;
 
@@ -230,7 +249,8 @@ private:
     void _rt_sim_tick(double dt, const godot::PackedFloat32Array& params,
         const godot::Array& bones_per_hair, const godot::PackedInt64Array& hair_ptrs,
         const godot::Array& bones_per_coll, const godot::PackedInt64Array& coll_ptrs,
-        int64_t sim_ptr, int64_t gate_dump_frame);
+        int64_t sim_ptr, int64_t gate_dump_frame,
+        const godot::PackedInt32Array& sdf_debug_flags);
     // Async-readback callbacks (fire on the render thread; only stash data).
     void _on_positions_async(const godot::PackedByteArray& data);
     void _on_gate_dump_async(const godot::PackedByteArray& data, int64_t frame);
@@ -250,6 +270,16 @@ private:
     // min/max distance, plus an explicit PASS/SUSPICIOUS verdict.
     void _on_coll_sdf_check_async(const godot::PackedByteArray& data, int64_t numCellsX, int64_t numCellsY,
         int64_t numCellsZ, double cellSize);
+    // SDF debug voxel view (follow-up, not physics): periodic (~every 30
+    // ticks) read-only readback of the finalized SDF grid for whichever
+    // collision meshes have show_sdf_debug on. Scans the grid and pre-builds a
+    // MultiMesh instance buffer (translation + depth-graded color) on THIS
+    // (render) thread -- the main thread only has to call MultiMesh::set_buffer.
+    // origin/nx/ny/nz/cellSize are the grid snapshot AT REQUEST TIME (dims/
+    // cellSize never change after EnsureSDFPSOCreated, but origin re-centers
+    // every tick), so late-arriving data still lands where that snapshot was.
+    void _on_sdf_debug_readback_async(const godot::PackedByteArray& data, int64_t collIndex,
+        godot::Vector3 origin, int64_t numCellsX, int64_t numCellsY, int64_t numCellsZ, double cellSize);
     // Frees GPU-owned objects on the render thread (payload allocated by
     // teardown_gpu_runtime).
     static void _rt_destroy_gpu_payload(int64_t payload_ptr);
@@ -277,6 +307,13 @@ private:
     bool m_coll_sdf_check_done = false;
     uint64_t m_sim_steps = 0;
 
+    // SDF debug voxel view: render-thread-only state (both the requesting
+    // tick and the completion callback run on the render thread, in FIFO
+    // order, so no atomics/mutex needed here -- only the handoff to the main
+    // thread below needs one). Index-aligned with m_collisionMeshes.
+    std::vector<bool> m_sdf_debug_inflight;
+    bool m_sdf_debug_cap_warned = false;
+
     // Dump metadata cached on the main thread before GPU init so the gate-dump
     // callback never walks the node's containers from the render thread.
     int m_gate_vps = 0;
@@ -288,6 +325,28 @@ private:
     std::mutex m_readback_mutex;
     godot::PackedByteArray m_readback_positions;
     bool m_readback_new = false;
+
+    // SDF debug voxel view: pre-built MultiMesh instance buffer, written by
+    // _on_sdf_debug_readback_async on the render thread, consumed by _process
+    // on the main thread. Index-aligned with m_collisionMeshes.
+    struct SDFDebugPending {
+        bool has_new = false;
+        godot::PackedFloat32Array buffer; // 16 floats/instance: 12 xform + 4 color (RGBA)
+        int32_t instance_count = 0;
+        float cellSize = 0.0f;
+    };
+    std::mutex m_sdf_debug_mutex;
+    std::vector<SDFDebugPending> m_sdf_debug_pending;
+
+    // Main-thread-only: the live MultiMeshInstance3D per collision mesh (child
+    // of the owning TressFXCollisionNode). Index-aligned with m_collisionMeshes.
+    struct SDFDebugVisual {
+        godot::MultiMeshInstance3D* instance = nullptr;
+        godot::Ref<godot::MultiMesh> multimesh;
+        godot::Ref<godot::BoxMesh> box_mesh;
+        float cellSize = 0.0f;
+    };
+    std::vector<SDFDebugVisual> m_sdf_debug_visuals;
 
     double m_time_seconds = 0.0;
     uint64_t m_frame_index = 0;

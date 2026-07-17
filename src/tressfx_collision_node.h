@@ -38,6 +38,14 @@ public:
     void set_follow_bone(const String &p) { followBone = p; }
     String get_follow_bone() const { return followBone; }
 
+    // SDF debug/authoring follow-ups (not physics): grid padding tunable, and
+    // a runtime-only voxel visualization toggle.
+    void set_sdf_padding_cells(int p) { sdf_padding_cells = p; }
+    int get_sdf_padding_cells() const { return sdf_padding_cells; }
+
+    void set_show_sdf_debug(bool p) { show_sdf_debug = p; }
+    bool get_show_sdf_debug() const { return show_sdf_debug; }
+
     void set_skeleton_node_path(const NodePath &p);
     NodePath get_skeleton_node_path() const { return skeleton_node_path; }
 
@@ -62,6 +70,8 @@ private:
     int mesh = 0;
     String followBone;
     NodePath skeleton_node_path;
+    int sdf_padding_cells = 40;
+    bool show_sdf_debug = false;
 
     // Use the description type from the hair node to match character registration signature
     TressFXHairNode::TressFXCollisionMeshDescription last_collision_description;

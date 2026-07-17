@@ -35,11 +35,19 @@ void TressFXCollisionNode::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_skeleton_node_path", "p"), &TressFXCollisionNode::set_skeleton_node_path);
     ClassDB::bind_method(D_METHOD("get_skeleton_node_path"), &TressFXCollisionNode::get_skeleton_node_path);
 
+    ClassDB::bind_method(D_METHOD("set_sdf_padding_cells", "p"), &TressFXCollisionNode::set_sdf_padding_cells);
+    ClassDB::bind_method(D_METHOD("get_sdf_padding_cells"), &TressFXCollisionNode::get_sdf_padding_cells);
+
+    ClassDB::bind_method(D_METHOD("set_show_sdf_debug", "p"), &TressFXCollisionNode::set_show_sdf_debug);
+    ClassDB::bind_method(D_METHOD("get_show_sdf_debug"), &TressFXCollisionNode::get_show_sdf_debug);
+
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_mesh_file", PROPERTY_HINT_FILE, "*.tfxmesh"), "set_tfx_mesh_file", "get_tfx_mesh_file");
     ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "skeleton_node_path"), "set_skeleton_node_path", "get_skeleton_node_path");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "numCellsInXAxis"), "set_num_cells_in_x", "get_num_cells_in_x");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collisionMargin"), "set_collision_margin", "get_collision_margin");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "mesh"), "set_mesh", "get_mesh");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "sdf_padding_cells", PROPERTY_HINT_RANGE, "2,64,1"), "set_sdf_padding_cells", "get_sdf_padding_cells");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_sdf_debug"), "set_show_sdf_debug", "get_show_sdf_debug");
     // followBone is provided dynamically via _get_property_list so the inspector can present an up-to-date enum
 }
 
@@ -64,6 +72,7 @@ void TressFXCollisionNode::_ready() {
     last_collision_description.collisionMargin = collisionMargin;
     last_collision_description.mesh = mesh;
     last_collision_description.followBone = followBone;
+    last_collision_description.sdf_padding_cells = sdf_padding_cells;
     // Store skeleton path relative to the character (not this node), so the character
     // can reliably resolve it later regardless of where this node sits in the tree.
     last_collision_description.skeleton_node_path = String();
@@ -104,7 +113,7 @@ void TressFXCollisionNode::_ready() {
 
             // Only register if the mesh file is set
             if (!last_collision_description.tfx_mesh_file.is_empty()) {
-                character->register_collision_description(last_collision_description);
+                character->register_collision_description(last_collision_description, this);
             } else {
                 UtilityFunctions::print(String("TressFXCollisionNode: tfx_mesh_file empty; skipping registration."));
             }
@@ -162,6 +171,7 @@ void TressFXCollisionNode::load_tfx_collision_asset() {
     last_collision_description.collisionMargin = collisionMargin;
     last_collision_description.mesh = mesh;
     last_collision_description.followBone = followBone;
+    last_collision_description.sdf_padding_cells = sdf_padding_cells;
     // Keep this as node-relative; register_to_character will rewrite to character-relative.
     last_collision_description.skeleton_node_path = String(skeleton_node_path);
 
@@ -188,7 +198,7 @@ void TressFXCollisionNode::register_to_character(TressFXCharacter *character) {
             UtilityFunctions::print("TressFXCollisionNode: register_to_character skeleton_node_path not set");
         }
         if (!last_collision_description.tfx_mesh_file.is_empty()) {
-            character->register_collision_description(last_collision_description);
+            character->register_collision_description(last_collision_description, this);
         } else {
             UtilityFunctions::print(String("TressFXCollisionNode::register_to_character: tfx_mesh_file empty; skipping registration."));
         }

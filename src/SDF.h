@@ -35,7 +35,8 @@ public:
         int numCellsInXAxis,
         float SDFCollMargin,
         int skinNumber,
-        const char* followBone);
+        const char* followBone,
+        int sdfPaddingCells = 40);
 
     ~CollisionMesh();
 
@@ -91,6 +92,12 @@ public:
     int GetSDFNumCellsY() const { return m_numCellsY; }
     int GetSDFNumCellsZ() const { return m_numCellsZ; }
     float GetSDFCellSize() const { return m_cellSize; }
+    // Grid origin computed by the most recent UpdateSDF() call (see
+    // m_lastGridOrigin). Debug/authoring use only (voxel visualization) --
+    // travels with async readbacks so late-arriving data is placed using the
+    // grid snapshot it actually reflects, not wherever the grid is by the
+    // time the readback completes.
+    godot::Vector3 GetSDFGridOrigin() const { return m_lastGridOrigin; }
 
     // A3.2 subtask 4: SDF-vs-hair collision response. Faithful port of
     // thirdparty/tressfx/src/Shaders/TressFXSDFCollision.hlsl entry point
@@ -180,6 +187,10 @@ private:
     int m_numCellsInXAxis = 0;
     float m_SDFCollMargin = 0.0f;
     int m_skinNumber = 0;
+    // SDF grid padding (cells per side, all 3 axes) -- see EnsureSDFPSOCreated.
+    // Debug/authoring tunable (SDF follow-up); default 40 matches AMD's own
+    // 0.8*numCellsInXAxis derivation at this scene's default numCellsInXAxis=50.
+    int m_sdfPaddingCells = 40;
 
     // CPU-side parsed data (rest pose).
     std::vector<godot::Vector3> m_positions;

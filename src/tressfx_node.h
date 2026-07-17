@@ -36,6 +36,11 @@ public:
         // NodePath (string) to the Skeleton3D node in the scene. Optional — used
         // by the editor/runtime to resolve bone transforms for followBone.
         String skeleton_node_path;
+        // SDF grid padding, in cells, applied to the rest-pose AABB on every
+        // axis before sizing the grid (see CollisionMesh::EnsureSDFPSOCreated).
+        // 40 matches AMD's own derivation (0.8 * numCellsInXAxis) at the
+        // scene's default numCellsInXAxis=50, so this default is a no-op.
+        int sdf_padding_cells = 40;
     };
 
 protected:
