@@ -9,6 +9,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -163,6 +164,10 @@ CollisionMesh::CollisionMesh(
         m_valid = false;
         return;
     }
+
+    // Resolved once, same GetBoneIdByName mechanism as per-vertex bone
+    // indices -- used only by UpdateSDF() to re-center the SDF grid.
+    m_followBoneIndex = m_pScene ? m_pScene->GetBoneIdByName(m_skinNumber, m_followBone.c_str()) : 0;
 
     m_valid = true;
     godot::UtilityFunctions::print(
@@ -520,4 +525,177 @@ godot::Vector3 CollisionMesh::CpuSkinVertex(int vertexIndex, const godot::Packed
     // on this row-major-packed M reproduces the GLSL kernel's (mat4(M) * vec4(v,1)).
     const XMVECTOR skinned = XMVector4Transform(posV, bone_matrix);
     return godot::Vector3(skinned.x, skinned.y, skinned.z);
+}
+
+bool CollisionMesh::EnsureSDFPSOCreated() {
+    if (m_sdfPSOCreated) {
+        return true;
+    }
+    if (!m_valid || !m_gpuResourcesCreated) {
+        return false;
+    }
+
+    EI_Device* device = GetDevice();
+    if (!device) {
+        return false;
+    }
+    godot::RenderingDevice* rd = device->GetLocalRenderingDevice();
+    if (!rd) {
+        return false;
+    }
+
+    EI_BindLayout* generateSdfLayout = GetGenerateSDFLayout();
+    if (!generateSdfLayout) {
+        // Global TressFX layouts not initialized yet (Simulation::Initialize()
+        // creates them); try again next call.
+        return false;
+    }
+
+    // Grid setup: faithful port of TressFXSDFCollision::TressFXSDFCollision's
+    // constructor (thirdparty/tressfx/src/TressFX/TressFXSDFCollision.cpp
+    // lines 38-71). Cell size and grid dimensions are derived ONCE from the
+    // mesh's rest-pose (tight) AABB and never change again for this mesh's
+    // lifetime; only the grid origin is recomputed per frame (see UpdateSDF),
+    // tracking rigid motion via the follow bone. This matches AMD's own
+    // TressFXBoneSkinning::GetBoundingBox() (TressFXBoneSkinning.cpp
+    // lines 439-452), which translates the SAME rest-pose box by the follow
+    // bone's current-vs-rest delta instead of reading back the skinned mesh
+    // -- no GPU bounding-box computation exists in either AMD's sample or
+    // our port.
+    const godot::Vector3 bmin = m_aabbMin;
+    const godot::Vector3 bmax = m_aabbMax;
+    m_cellSize = (bmax.x - bmin.x) / (float)m_numCellsInXAxis;
+    const int numExtraPaddingCells = (int)(0.8f * (float)m_numCellsInXAxis);
+    // AMD's constructor applies this padding uniformly on all three axes: its
+    // `m_PaddingBoundary = n*cellSize, n*cellSize, n*cellSize;` is a
+    // comma-operator scalar assignment (Vector3::operator=(float) broadcasts
+    // to all three components), not a 3-argument constructor call.
+    m_paddingBoundary = godot::Vector3(1.0f, 1.0f, 1.0f) * ((float)numExtraPaddingCells * m_cellSize);
+
+    const godot::Vector3 paddedMin = bmin - m_paddingBoundary;
+    const godot::Vector3 paddedMax = bmax + m_paddingBoundary;
+    m_numCellsX = (int)((paddedMax.x - paddedMin.x) / m_cellSize);
+    m_numCellsY = (int)((paddedMax.y - paddedMin.y) / m_cellSize);
+    m_numCellsZ = (int)((paddedMax.z - paddedMin.z) / m_cellSize);
+
+    // AMD allocates 40% more cells than the grid actually needs (headroom);
+    // InitializeSignedDistanceField/FinalizeSignedDistanceField dispatch over
+    // this larger count but the kernels themselves only ever touch indices
+    // below g_NumCellsX*Y*Z (computed from the UBO), so the extra capacity is
+    // simply unused, never read.
+    constexpr float kGridAllocationMultiplier = 1.4f;
+    const int64_t exactCells = (int64_t)m_numCellsX * (int64_t)m_numCellsY * (int64_t)m_numCellsZ;
+    m_numTotalCells = (int)std::min<int64_t>(INT_MAX, (int64_t)(kGridAllocationMultiplier * (double)exactCells));
+    if (m_numTotalCells <= 0) {
+        godot::UtilityFunctions::push_warning("CollisionMesh: EnsureSDFPSOCreated: degenerate SDF grid (0 cells)");
+        return false;
+    }
+
+    m_sdfGridUAV = device->CreateBufferResource(sizeof(uint32_t), m_numTotalCells, EI_BF_NEEDSUAV, "CollisionMeshSDFGrid");
+    m_sdfParamsUBO = device->CreateBufferResource((int)sizeof(SDFParamsUBOData), 1, EI_BF_UNIFORMBUFFER, "CollisionMeshSDFParams");
+
+    // Order MUST match CreateGenerateSDFLayout()'s resource list
+    // (TressFXLayouts.cpp): g_TrimeshVertexIndices, g_SignedDistanceField,
+    // collMeshVertexPositions (the same skinned UAV BoneSkinning writes),
+    // then the uniform buffer.
+    EI_BindSetDescription bindSetDesc;
+    bindSetDesc.resources = {
+        m_triangleIndicesSRV.get(),
+        m_sdfGridUAV.get(),
+        m_skinnedPositionsUAV.get(),
+        m_sdfParamsUBO.get(),
+    };
+    m_sdfBindSet = device->CreateBindSet(generateSdfLayout, bindSetDesc);
+
+    EI_BindLayout* layouts[] = { generateSdfLayout };
+    m_initSdfPSO = device->CreateComputeShaderPSO("TressFXSDFCollision", "InitializeSignedDistanceField", layouts, 1);
+    m_constructSdfPSO = device->CreateComputeShaderPSO("TressFXSDFCollision", "ConstructSignedDistanceField", layouts, 1);
+    m_finalizeSdfPSO = device->CreateComputeShaderPSO("TressFXSDFCollision", "FinalizeSignedDistanceField", layouts, 1);
+
+    m_sdfPSOCreated = m_initSdfPSO && m_initSdfPSO->pipeline.is_valid() &&
+            m_constructSdfPSO && m_constructSdfPSO->pipeline.is_valid() &&
+            m_finalizeSdfPSO && m_finalizeSdfPSO->pipeline.is_valid();
+
+    if (m_sdfPSOCreated) {
+        godot::UtilityFunctions::print(
+                godot::String("CollisionMesh: SDF grid created cells=(") + godot::String::num_int64(m_numCellsX) +
+                godot::String("x") + godot::String::num_int64(m_numCellsY) + godot::String("x") +
+                godot::String::num_int64(m_numCellsZ) + godot::String(") total=") + godot::String::num_int64(m_numTotalCells) +
+                godot::String(" cellSize=") + godot::String::num(m_cellSize, 5));
+    }
+    return m_sdfPSOCreated;
+}
+
+void CollisionMesh::UpdateSDF(EI_CommandContext& commandContext, const godot::PackedByteArray& bone_matrices_snapshot) {
+    if (!EnsureSDFPSOCreated()) {
+        return;
+    }
+
+    // Re-center the (fixed-size) grid on the mesh's current rigid position.
+    // AMD's TressFXSDFCollision::Update() calls UpdateSDFGrid(mesh->GetBoundingBox())
+    // every frame; the mesh implementation AMD ships (TressFXBoneSkinning::
+    // GetBoundingBox()) does NOT read back skinned vertices -- it applies the
+    // follow bone's current world-space skinning matrix to the rest-pose
+    // box's CENTER and uses the resulting delta as a pure translation of the
+    // whole (fixed-size) box. We reproduce that exactly; no GPU bounding-box
+    // readback exists in our EI backend either.
+    godot::Vector3 recenteredMin = m_aabbMin;
+    godot::Vector3 recenteredMax = m_aabbMax;
+    const int64_t available = bone_matrices_snapshot.size() / (int64_t)sizeof(XMMATRIX);
+    if (m_followBoneIndex >= 0 && (int64_t)m_followBoneIndex < available) {
+        const XMMATRIX* matrices = reinterpret_cast<const XMMATRIX*>(bone_matrices_snapshot.ptr());
+        const XMMATRIX& followMat = matrices[m_followBoneIndex];
+        const godot::Vector3 center = (m_aabbMin + m_aabbMax) * 0.5f;
+        const XMVECTOR centerV{ center.x, center.y, center.z, 1.0f };
+        const XMVECTOR newCenterV = XMVector4Transform(centerV, followMat);
+        const godot::Vector3 delta(newCenterV.x - centerV.x, newCenterV.y - centerV.y, newCenterV.z - centerV.z);
+        recenteredMin += delta;
+        recenteredMax += delta;
+    }
+
+    const godot::Vector3 origin = recenteredMin - m_paddingBoundary;
+
+    SDFParamsUBOData ubo;
+    ubo.origin[0] = origin.x;
+    ubo.origin[1] = origin.y;
+    ubo.origin[2] = origin.z;
+    ubo.origin[3] = 0.0f;
+    ubo.cellSize = m_cellSize;
+    ubo.numCellsX = m_numCellsX;
+    ubo.numCellsY = m_numCellsY;
+    ubo.numCellsZ = m_numCellsZ;
+    // Marching cubes / hair-collision fields are unused this subtask (the
+    // only consumer, CollideHairVerticesWithSdf, lands in subtask 4); left
+    // zeroed like the rest of the UBO's default member initializers.
+    ubo.collisionMargin = m_SDFCollMargin;
+
+    commandContext.UpdateBuffer(m_sdfParamsUBO.get(), &ubo);
+
+    // Sequence + barriers mirror TressFXSDFCollision::Update() exactly:
+    // Initialize (one thread/cell) -> barrier -> Construct (one thread/
+    // triangle, atomic-min splats into neighboring cells) -> barrier ->
+    // Finalize (undoes the FloatFlip encoding) -> barrier.
+    EI_BindSet* bindSets[] = { m_sdfBindSet.get() };
+    EI_Barrier sdfBarrier[] = { { m_sdfGridUAV.get(), EI_STATE_UAV, EI_STATE_UAV } };
+
+    const int numCellGroups = (int)std::ceil((float)m_numTotalCells / 64.0f);
+    commandContext.BindPSO(m_initSdfPSO.get());
+    commandContext.BindSets(m_initSdfPSO.get(), 1, bindSets);
+    commandContext.Dispatch(numCellGroups);
+    commandContext.SubmitBarrier(1, sdfBarrier);
+
+    const int numTriangleGroups = (int)std::ceil((float)m_numTriangles / 64.0f);
+    commandContext.BindPSO(m_constructSdfPSO.get());
+    commandContext.BindSets(m_constructSdfPSO.get(), 1, bindSets);
+    commandContext.Dispatch(numTriangleGroups);
+    commandContext.SubmitBarrier(1, sdfBarrier);
+
+    commandContext.BindPSO(m_finalizeSdfPSO.get());
+    commandContext.BindSets(m_finalizeSdfPSO.get(), 1, bindSets);
+    commandContext.Dispatch(numCellGroups);
+    commandContext.SubmitBarrier(1, sdfBarrier);
+}
+
+godot::RID CollisionMesh::GetSDFGridRID() const {
+    return m_sdfGridUAV ? m_sdfGridUAV->rid : godot::RID();
 }

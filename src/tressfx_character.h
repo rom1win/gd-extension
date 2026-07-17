@@ -234,6 +234,13 @@ private:
     // not distance from rest.
     void _on_coll_skin_check_async(const godot::PackedByteArray& data, godot::Vector3 rest_a, godot::Vector3 rest_b,
         int64_t vertex_b, godot::Vector3 cpu_a, godot::Vector3 cpu_b);
+    // A3.2 subtask 3 one-shot verification (fires once, ~sim tick 30): reads
+    // back the valid prefix (numCellsX*Y*Z cells -- the grid buffer itself is
+    // ~1.4x larger, AMD's own headroom, and the tail is never initialized)
+    // of the SDF grid built this tick and prints cell counts / inside-count /
+    // min/max distance, plus an explicit PASS/SUSPICIOUS verdict.
+    void _on_coll_sdf_check_async(const godot::PackedByteArray& data, int64_t numCellsX, int64_t numCellsY,
+        int64_t numCellsZ, double cellSize);
     // Frees GPU-owned objects on the render thread (payload allocated by
     // teardown_gpu_runtime).
     static void _rt_destroy_gpu_payload(int64_t payload_ptr);
@@ -255,9 +262,10 @@ private:
     std::atomic<bool> m_watchdog_fired{false};
     std::atomic<bool> m_watchdog_bones_reported{false};
     std::atomic<int64_t> m_rt_tick_count{0};
-    // A3.2 subtask 2 one-shot skin-check readback (render thread only; no
-    // atomics needed since _rt_sim_tick always runs on that same thread).
+    // A3.2 subtask 2/3 one-shot verification readbacks (render thread only;
+    // no atomics needed since _rt_sim_tick always runs on that same thread).
     bool m_coll_skin_check_done = false;
+    bool m_coll_sdf_check_done = false;
     uint64_t m_sim_steps = 0;
 
     // Dump metadata cached on the main thread before GPU init so the gate-dump

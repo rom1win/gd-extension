@@ -29,6 +29,8 @@
 #include "HairStrands.h"
 #include "SDF.h"
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include "GodotScene.h"
 
 using namespace godot;
@@ -472,6 +474,32 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         }
     }
 
+    // A3.2 subtask 3 one-shot verification: reads back the SDF grid built
+    // this tick (same timing/rationale as the skin check above -- fires
+    // once, ~sim tick 30). Only the valid prefix (numCellsX*Y*Z cells) is
+    // requested; the grid buffer itself is ~1.4x larger (AMD's own headroom)
+    // and the tail is never written by InitializeSignedDistanceField, so
+    // reading it would show meaningless driver-default bytes.
+    if (!m_coll_sdf_check_done && tick >= 30 && !ctx.collisionMeshes.empty()) {
+        m_coll_sdf_check_done = true;
+        CollisionMesh* c = ctx.collisionMeshes[0];
+        RenderingServer* rs_sdf_check = RenderingServer::get_singleton();
+        RenderingDevice* rd_sdf_check = rs_sdf_check ? rs_sdf_check->get_rendering_device() : nullptr;
+        if (c && c->IsValid() && rd_sdf_check) {
+            const RID sdf_rid = c->GetSDFGridRID();
+            const int64_t numCellsX = c->GetSDFNumCellsX();
+            const int64_t numCellsY = c->GetSDFNumCellsY();
+            const int64_t numCellsZ = c->GetSDFNumCellsZ();
+            const int64_t validCells = numCellsX * numCellsY * numCellsZ;
+            if (sdf_rid.is_valid() && validCells > 0) {
+                rd_sdf_check->buffer_get_data_async(sdf_rid,
+                    callable_mp(this, &TressFXCharacter::_on_coll_sdf_check_async)
+                        .bind(numCellsX, numCellsY, numCellsZ, (double)c->GetSDFCellSize()),
+                    0, (uint32_t)(validCells * (int64_t)sizeof(uint32_t)));
+            }
+        }
+    }
+
     // Queue async readbacks AFTER the dispatches so the data reflects this step.
     if (ctx.hairStrands.empty() || !ctx.hairStrands[0]) {
         return;
@@ -543,6 +571,71 @@ void TressFXCharacter::_on_coll_skin_check_async(const PackedByteArray& data, Ve
             String(" v") + String::num_int64(vertex_b) + String("=") + String::num(diff_b, 6));
     } else {
         UtilityFunctions::print("CollisionMesh SKIN CHECK: PASS (gpu matches cpu reference within ", String::num(tol, 4), ")");
+    }
+}
+
+void TressFXCharacter::_on_coll_sdf_check_async(const PackedByteArray& data, int64_t numCellsX, int64_t numCellsY,
+        int64_t numCellsZ, double cellSize) {
+    // Render-thread callback. Buffer holds plain IEEE-754 float bit patterns
+    // (FinalizeSignedDistanceField already undid the FloatFlip encoding), one
+    // uint32 per grid cell, requested as the numCellsX*Y*Z prefix only (see
+    // the dispatch site in _rt_sim_tick).
+    const int64_t totalCells = numCellsX * numCellsY * numCellsZ;
+    const int64_t need_bytes = totalCells * (int64_t)sizeof(uint32_t);
+    if (totalCells <= 0 || data.size() < need_bytes) {
+        UtilityFunctions::print("CollisionMesh SDF CHECK: readback too small (", (int64_t)data.size(),
+            " bytes, expected ", need_bytes, ")");
+        return;
+    }
+
+    const uint32_t* raw = reinterpret_cast<const uint32_t*>(data.ptr());
+    int64_t insideCount = 0;
+    bool anyNaN = false;
+    float minVal = std::numeric_limits<float>::infinity();
+    float maxVal = -std::numeric_limits<float>::infinity();
+    for (int64_t i = 0; i < totalCells; ++i) {
+        float v;
+        std::memcpy(&v, &raw[i], sizeof(float));
+        if (!std::isfinite(v)) {
+            anyNaN = true;
+            continue;
+        }
+        if (v < 0.0f) {
+            ++insideCount;
+        }
+        minVal = std::min(minVal, v);
+        maxVal = std::max(maxVal, v);
+    }
+
+    UtilityFunctions::print(
+        "CollisionMesh SDF CHECK: cells=", totalCells, " (", numCellsX, "*", numCellsY, "*", numCellsZ,
+        ") cellSize=", String::num(cellSize, 5), " inside=", insideCount,
+        " min=", String::num(minVal, 4), " max=", String::num(maxVal, 4));
+
+    // Pass bar: a solid body interior exists (inside > 0) but is a minority
+    // of the (heavily padded) grid volume; min is negative on the order of a
+    // body half-thickness (a few cm to a few tens of cm, never meters); max
+    // is finite and no NaN/Inf anywhere. Cells far from the mesh legitimately
+    // stay at INITIAL_DISTANCE (1e10, see the Initialize kernel) -- max
+    // landing exactly there is expected, not a bug (the heavily padded grid
+    // has plenty of empty corners no triangle's local AABB ever reaches).
+    constexpr float kInitialDistance = 1e10f;
+    constexpr float kExpectedMinFloor = -1.0f; // generous upper bound on body half-thickness
+    constexpr double kMaxInsideFraction = 0.5; // interior should be a minority of the padded grid
+    const double insideFraction = (double)insideCount / (double)totalCells;
+    const bool pass = !anyNaN
+            && insideCount > 0
+            && insideFraction < kMaxInsideFraction
+            && minVal < 0.0f && minVal > kExpectedMinFloor
+            && maxVal > 0.0f && maxVal <= kInitialDistance;
+    if (pass) {
+        UtilityFunctions::print("CollisionMesh SDF CHECK: PASS");
+    } else {
+        UtilityFunctions::print(
+            "CollisionMesh SDF CHECK: SUSPICIOUS (expected: no NaN, inside>0, inside_fraction<",
+            String::num(kMaxInsideFraction, 2), " [got ", String::num(insideFraction, 4),
+            "], min in (", String::num(kExpectedMinFloor, 2), ",0) [got ", String::num(minVal, 4),
+            "], 0<max<=", String::num(kInitialDistance, 0), " [got ", String::num(maxVal, 4), "])");
     }
 }
 

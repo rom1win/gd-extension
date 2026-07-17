@@ -187,3 +187,105 @@ reimplemented directly in `src/SDF.cpp` (`CollisionMesh::EnsureSkinningPSOCreate
 `UpdateSkinning`), reusing the still-compiled `GetBoneSkinningMeshLayout()`
 from `TressFXLayouts.cpp` unchanged (its binding numbers — u0/t1/t2/b3 —
 are exactly what the new GLSL kernel declares).
+
+### S2 — `TressFXSDFCollision` Initialize/Construct/Finalize — ported
+
+Ported from `thirdparty/tressfx/src/Shaders/TressFXSDFCollision.hlsl`:
+`InitializeSignedDistanceField` (line ~302), `ConstructSignedDistanceField`
+(~330, plus its geometry helpers `GetSdfCoordinates`/`GetSdfCellPosition`/
+`GetSdfCellIndex` ~102–129, `DistancePointToEdge` ~147,
+`SignedDistancePointToTriangle` ~163), `FinalizeSignedDistanceField` (~401),
+to three separate files (one entry point per file, per this subtask's
+brief): `demo/shaders/glsl/TressFXSDFCollision.{InitializeSignedDistanceField,
+ConstructSignedDistanceField,FinalizeSignedDistanceField}.comp.glsl`.
+`CollideHairVerticesWithSdf{,_forward}` (~532/~600) and the unused
+`SignedDistancePointToTriangle2`/`GetLocalCellPositionFromIndex` helpers are
+NOT ported this subtask — collision response is subtask 4.
+
+**FloatFlip encoding** (HLSL lines 83–100): there is no 32-bit float
+`atomic_min` on either backend, so the SDF grid buffer stores `uint`, and a
+float distance is written via `FloatFlip3(fl) = (asuint(fl) << 1) |
+(asuint(fl) >> 31)` before `InterlockedMin`/`atomicMin`, then read back via
+the inverse `IFloatFlip3` after all triangles have splatted their distances.
+This bit-rotation makes the *unsigned* integer ordering match the *signed*
+float ordering (AMD's comment: "prefers positive values... results in a SDF
+with higher quality" vs. the sign-preferring `FloatFlip2`, not ported —
+unused by any entry point we call). Ported byte-for-byte:
+`floatBitsToUint`/`uintBitsToFloat` replace `asuint`/`asfloat`; GLSL's
+`atomicMin` on a `uint` storage-buffer element replaces `InterlockedMin`
+directly (both are real device-wide atomics, not workgroup-shared).
+
+**Mechanical HLSL→GLSL changes only, no behavioral change:**
+- `RWStructuredBuffer<uint>`/`StructuredBuffer<uint>` become GLSL
+  `buffer`/`readonly buffer` blocks with a single unsized `uint[]` member;
+  `g_TrimeshVertexIndices.GetDimensions(...)` (used to derive triangle count)
+  becomes GLSL's `.length()` on that same unsized array — same value, no
+  separate triangle-count uniform needed.
+- All three files declare the SAME 4 bindings (`g_TrimeshVertexIndices`,
+  `g_SignedDistanceField`, `collMeshVertexPositions`, `ConstBuffer_SDF`) even
+  where a given entry point doesn't touch one, so all three PSOs' compiled
+  SPIR-V keeps a matching descriptor-set interface for the single shared
+  `EI_BindSet` (`src/SDF.cpp`'s `m_sdfBindSet`) — this mirrors AMD's own
+  scheme, where every entry point in this family is compiled from the same
+  `.hlsl` file and its file-scope declarations regardless of which ones it
+  uses.
+- `int3`/`float3` become `ivec3`/`vec3`; `InterlockedMin` becomes `atomicMin`;
+  `dot`/`length`/`cross`/`min`/`max`/`clamp` are used identically (HLSL and
+  GLSL share these intrinsics); the triple-nested cell loop, the
+  `GRID_MARGIN`/`MARGIN` padding, and the barycentric/edge-distance math in
+  `SignedDistancePointToTriangle` are copied statement-for-statement.
+
+**Grid scheme — read carefully, this is the part the task flagged as
+potentially ambiguous.** AMD's `TressFXSDFCollision` (host class,
+`thirdparty/tressfx/src/TressFX/TressFXSDFCollision.{h,cpp}`, not compiled
+into this build — reimplemented in `src/SDF.cpp`, consistent with S1's
+host-side note) computes cell size and grid dimensions **once**, in its
+constructor, from the mesh's **rest-pose** AABB
+(`GetInitialBoundingBox()`) plus a fixed padding (`0.8 * numCellsInXAxis`
+cells on every axis) and a 1.4x cell-count allocation multiplier (headroom;
+the kernels themselves only ever touch indices below the *exact*
+`NumCellsX*Y*Z`, computed from the UBO, so the extra buffer capacity is
+simply unused, never read). Every subsequent `Update()` call recomputes
+**only the grid origin**, via `UpdateSDFGrid(mesh->GetBoundingBox())` — and
+critically, AMD's own shipped mesh implementation
+(`TressFXBoneSkinning::GetBoundingBox()`,
+`thirdparty/tressfx/src/TressFX/TressFXBoneSkinning.cpp` lines 439–452) does
+**not** read back skinned vertices to get this box. It translates the SAME
+rest-pose box by a single rigid delta: it applies the **follow bone**'s
+current world-space skinning matrix to the rest-pose box's center, and
+adds `(transformed_center - center)` to both the min and max corners. Cell
+size and grid dimensions never change again for the mesh's lifetime.
+
+`src/SDF.cpp`'s `CollisionMesh::EnsureSDFPSOCreated()` /
+`CollisionMesh::UpdateSDF()` reproduce this exactly, substituting our
+already-existing rest-pose tight AABB (`m_aabbMin`/`m_aabbMax`, computed by
+`LoadTfxMesh()` in subtask 1) for AMD's rest-pose bounding-sphere-derived
+box (AMD's constructor builds a sphere from all rest vertices, then encloses
+it in an AABB; the tight AABB we already had is a reasonable, tighter
+substitute for the same purpose — it doesn't change the recentering
+mechanism, only makes the initial box a closer fit) and using the
+already-resolved follow-bone index (`m_followBoneIndex`, via the same
+`GetBoneIdByName` mechanism used for per-vertex bone indices) with the same
+bone-matrix-snapshot bytes already passed to `UpdateSkinning()` this tick —
+no new GPU bounding-box computation exists in either AMD's sample or our
+port, and none was invented for this port.
+
+**Ratboy's grid, for reference** (AABB `(-0.248,0,-0.108)`..
+`(0.248,0.913,0.344)`, `numCellsInXAxis=50`, `collisionMargin=0.0`):
+`cellSize=0.00992` m, padding `=40*cellSize=0.3968` m on every axis,
+`numCellsX=130`, `numCellsY=172`, `numCellsZ=125` (exact cells = 2,795,000),
+`numTotalCells` (1.4x allocation) `=3,913,000` uint32s (~14.9 MiB).
+
+**Dispatch sequence + barriers**, matching
+`TressFXSDFCollision::Update()` exactly: `InitializeSignedDistanceField`
+(`ceil(numTotalCells/64)` groups) → UAV barrier → `ConstructSignedDistanceField`
+(`ceil(numTriangles/64)` groups) → UAV barrier → `FinalizeSignedDistanceField`
+(`ceil(numTotalCells/64)` groups) → UAV barrier. Called from
+`Simulation::StartSimulation`, per collision mesh, immediately after
+`UpdateSkinning()` (whose own trailing barrier makes the freshly skinned
+vertices visible to `ConstructSignedDistanceField`), still gated by
+`bUpdateCollMesh` (hardcoded `true` at the `tressfx_character.cpp` call site
+until subtask 4 wires the real `sdf_collision_enabled` property). Nothing
+consumes the built grid yet — `g_SignedDistanceField` is written and decoded
+back to plain floats, but no hair-side kernel reads it until subtask 4's
+`CollideHairVerticesWithSdf`.

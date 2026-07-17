@@ -145,9 +145,12 @@ void Simulation::StartSimulation(
     }
 
     // A3.2 subtask 2: skin the collision mesh(es) to the current bone pose
-    // BEFORE the hair kernels run (bSDFCollisionResponse stays false this
-    // subtask -- nothing consumes the skinned buffer on the hair side yet;
-    // this only keeps it up to date for verification/subtask 3+).
+    // BEFORE the hair kernels run. Subtask 3 adds the SDF grid build right
+    // after (UpdateSkinning() already leaves a UAV barrier behind it, so
+    // ConstructSignedDistanceField reads the freshly skinned vertices).
+    // bSDFCollisionResponse stays false this subtask -- nothing on the hair
+    // side consumes the grid yet; this only keeps it up to date for
+    // verification/subtask 4.
     if (bUpdateCollMesh) {
         for (size_t i = 0; i < ctx.collisionMeshes.size(); ++i) {
             CollisionMesh* c = ctx.collisionMeshes[i];
@@ -156,6 +159,7 @@ void Simulation::StartSimulation(
             }
             if (i < ctx.collision_bone_matrices.size() && ctx.collision_bone_matrices[i].size() > 0) {
                 c->UpdateSkinning(commandContext, ctx.collision_bone_matrices[i]);
+                c->UpdateSDF(commandContext, ctx.collision_bone_matrices[i]);
             }
         }
     }
