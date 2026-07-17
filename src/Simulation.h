@@ -27,6 +27,10 @@ struct SimulationContext {
     // keep the previously applied matrices.
     std::vector<godot::PackedByteArray> bone_matrices;
 
+    // Same convention as bone_matrices, parallel to collisionMeshes (index i
+    // is the snapshot for collisionMeshes[i]'s own EI_Scene/skeleton).
+    std::vector<godot::PackedByteArray> collision_bone_matrices;
+
     // Wind in world space (direction * magnitude). Default zero = no wind.
     godot::Vector3 wind_velocity = godot::Vector3(0, 0, 0);
 
@@ -41,6 +45,12 @@ struct SimulationContext {
     float damping                     = 0.068f;
     float gravityMagnitude            = 0.09f;
     float tipSeparation               = 1.0f;   // follow-hair spread; RatBoy default (NOTES §6)
+    // Max distance (sim-space units = meters for us) a vertex may move per sim
+    // step before the kernel clamps it and rewrites its velocity history.
+    // AMD's default 20 assumed a centimeter-scale world; in meters it never
+    // fires. Kept at 20 by default (= AMD behavior, gate-identical); lower it
+    // to engage the clamp (A3.1 fast-bone-motion stability).
+    float clampPositionDelta          = 20.0f;
 };
 
 class Simulation {

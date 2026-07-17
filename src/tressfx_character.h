@@ -13,6 +13,7 @@
 #include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_int64_array.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "tressfx_node.h"
@@ -23,6 +24,7 @@
 using namespace godot;
 
 class EI_Scene;
+class TressFXCollisionNode;
 
 namespace godot {
 class Skeleton3D;
@@ -32,6 +34,9 @@ class Node3D;
 class BoneAttachment3D;
 class ArrayMesh;
 class ShaderMaterial;
+class MultiMesh;
+class MultiMeshInstance3D;
+class BoxMesh;
 }
 
 class TressFXCharacter : public Node3D {
@@ -50,7 +55,10 @@ public:
 
     // Registration API used by child hair/collision nodes
     void register_hair_description(const TressFXHairNode::TressFXObjectDescription &desc);
-    void register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc);
+    // node: owning TressFXCollisionNode, kept (not owned) so the SDF debug
+    // voxel view can read its show_sdf_debug toggle and parent a
+    // MultiMeshInstance3D under it. May be null for legacy callers.
+    void register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc, TressFXCollisionNode *node = nullptr);
 
     // Trigger creation of the TressFX runtime objects (stub for now)
     void load_all_assets();
@@ -82,12 +90,26 @@ public:
     void set_gate_capture_mode(bool enabled);
     bool get_gate_capture_mode() const;
 
+    // A3.1 diagnostic only: forces dt=1/60 like gate_capture_mode, but leaves
+    // real bone poses and wind alone -- lets head_shake.gd's motion run under
+    // fixed dt to isolate whether variable per-frame dt is what destabilizes
+    // the solver under fast bone motion. Off by default; not a product feature.
+    void set_debug_force_fixed_dt(bool enabled);
+    bool get_debug_force_fixed_dt() const;
+
     // Simulation physics properties (exposed to inspector).
     void set_gravity_magnitude(float v); float get_gravity_magnitude() const;
     void set_damping(float v);           float get_damping() const;
     void set_global_stiffness(float v);  float get_global_stiffness() const;
     void set_global_range(float v);      float get_global_range() const;
     void set_local_stiffness(float v);   float get_local_stiffness() const;
+    void set_clamp_position_delta(float v); float get_clamp_position_delta() const;
+
+    // A3.2 subtask 4: gates the SDF-vs-hair collision response (writes hair
+    // position buffers -- physics-affecting). Off by default; forced off
+    // regardless of this property while gate_capture_mode is on (see
+    // _rt_sim_tick -- the regression baseline predates SDF collision).
+    void set_sdf_collision_enabled(bool enabled); bool get_sdf_collision_enabled() const;
 
     // A2.2: ribbon half-width in meters (TressFX FiberRadius convention).
     void set_hair_fiber_radius(float v); float get_hair_fiber_radius() const;
@@ -120,6 +142,17 @@ private:
     // Node-driven configuration should decide which skeleton is used.
     std::vector<std::unique_ptr<EI_Scene>> m_adapterScenes;
 
+    // Parallel to m_collisionDescriptions (index-aligned, not owned): the
+    // TressFXCollisionNode each description came from, so the SDF debug voxel
+    // view can read its show_sdf_debug toggle and parent its MultiMeshInstance3D
+    // under it.
+    std::vector<TressFXCollisionNode*> m_collisionNodes;
+    // Parallel to m_collisionMeshes (index-aligned, not owned): the skeleton
+    // resolved for that mesh in load_all_assets, reused as the SDF debug
+    // MultiMesh's mount transform (same convention as update_gpu_debug_hair_
+    // lines_3d_transform -- grid origin is in skeleton model space).
+    std::vector<godot::Skeleton3D*> m_collisionSkeletons;
+
     std::unique_ptr<Simulation> m_pSimulation;
 
     // Debug toggle:
@@ -149,6 +182,12 @@ private:
     float m_global_stiffness   = 0.408f;
     float m_global_range       = 0.308f;
     float m_local_stiffness    = 0.908f;
+    // Max vertex travel per sim step (meters) before the kernel clamps it.
+    // 20 = AMD's default = effectively OFF at meter scale (see Simulation.h).
+    float m_clamp_position_delta = 20.0f;
+
+    // A3.2 subtask 4: off by default (see set_sdf_collision_enabled comment).
+    bool m_sdf_collision_enabled = false;
 
     // Cached packed guide positions for optional legacy 2D overlay texture output.
     godot::PackedByteArray m_last_guide_positions_bytes;
@@ -176,7 +215,10 @@ private:
     godot::MeshInstance3D* m_gpu_ribbon_instance = nullptr;
     godot::Ref<godot::ArrayMesh> m_gpu_ribbon_mesh;
     godot::Ref<godot::ShaderMaterial> m_gpu_ribbon_material;
-    float m_hair_fiber_radius = 0.0021f;
+    // 0.0021 is AMD's default (TressFXSettings.h), but AMD pairs it with tip
+    // thinning and offset follow hairs; with those now in place the base width
+    // can come down. Live-tunable in the Inspector while the game runs.
+    float m_hair_fiber_radius = 0.001f;
     godot::Color m_hair_root_color = godot::Color(0.25f, 0.12f, 0.06f);
     godot::Color m_hair_tip_color  = godot::Color(0.55f, 0.35f, 0.18f);
     bool m_show_gpu_debug_lines = false;
@@ -203,13 +245,41 @@ private:
     // via RenderingServer::call_on_render_thread and never run on the main
     // thread; they receive every input by value (plus raw pointers that stay
     // valid because teardown is queued behind them on the same thread).
-    void _rt_initialize_gpu(int64_t sim_ptr, const godot::PackedInt64Array& hair_ptrs);
+    void _rt_initialize_gpu(int64_t sim_ptr, const godot::PackedInt64Array& hair_ptrs, const godot::PackedInt64Array& coll_ptrs);
     void _rt_sim_tick(double dt, const godot::PackedFloat32Array& params,
         const godot::Array& bones_per_hair, const godot::PackedInt64Array& hair_ptrs,
-        int64_t sim_ptr, int64_t gate_dump_frame);
+        const godot::Array& bones_per_coll, const godot::PackedInt64Array& coll_ptrs,
+        int64_t sim_ptr, int64_t gate_dump_frame,
+        const godot::PackedInt32Array& sdf_debug_flags);
     // Async-readback callbacks (fire on the render thread; only stash data).
     void _on_positions_async(const godot::PackedByteArray& data);
     void _on_gate_dump_async(const godot::PackedByteArray& data, int64_t frame);
+    // A3.2 subtask 2 one-shot verification (fires once, ~sim tick 30): prints
+    // rest/gpu/cpu position for two collision-mesh vertices. gpu is the async
+    // readback of the kernel's output; cpu is CollisionMesh::CpuSkinVertex()
+    // run on the SAME bone-matrix snapshot bytes used for the GPU dispatch
+    // that tick -- this is a self-check (kernel vs. reference math), not a
+    // "did the skeleton move" check, so gpu/cpu agreement is the pass bar,
+    // not distance from rest.
+    void _on_coll_skin_check_async(const godot::PackedByteArray& data, godot::Vector3 rest_a, godot::Vector3 rest_b,
+        int64_t vertex_b, godot::Vector3 cpu_a, godot::Vector3 cpu_b);
+    // A3.2 subtask 3 one-shot verification (fires once, ~sim tick 30): reads
+    // back the valid prefix (numCellsX*Y*Z cells -- the grid buffer itself is
+    // ~1.4x larger, AMD's own headroom, and the tail is never initialized)
+    // of the SDF grid built this tick and prints cell counts / inside-count /
+    // min/max distance, plus an explicit PASS/SUSPICIOUS verdict.
+    void _on_coll_sdf_check_async(const godot::PackedByteArray& data, int64_t numCellsX, int64_t numCellsY,
+        int64_t numCellsZ, double cellSize);
+    // SDF debug voxel view (follow-up, not physics): periodic (~every 30
+    // ticks) read-only readback of the finalized SDF grid for whichever
+    // collision meshes have show_sdf_debug on. Scans the grid and pre-builds a
+    // MultiMesh instance buffer (translation + depth-graded color) on THIS
+    // (render) thread -- the main thread only has to call MultiMesh::set_buffer.
+    // origin/nx/ny/nz/cellSize are the grid snapshot AT REQUEST TIME (dims/
+    // cellSize never change after EnsureSDFPSOCreated, but origin re-centers
+    // every tick), so late-arriving data still lands where that snapshot was.
+    void _on_sdf_debug_readback_async(const godot::PackedByteArray& data, int64_t collIndex,
+        godot::Vector3 origin, int64_t numCellsX, int64_t numCellsY, int64_t numCellsZ, double cellSize);
     // Frees GPU-owned objects on the render thread (payload allocated by
     // teardown_gpu_runtime).
     static void _rt_destroy_gpu_payload(int64_t payload_ptr);
@@ -220,8 +290,29 @@ private:
     void teardown_gpu_runtime();
 
     bool m_gate_capture_mode = false;
+    bool m_debug_force_fixed_dt = false;
     std::atomic<bool> m_rt_gpu_ready{false};
+
+    // A3 NaN watchdog: reports the FIRST non-finite or absurdly large position
+    // in the per-tick async readback (and any non-finite bone matrix), then
+    // goes quiet. Zero cost after it fires; kept as a tripwire for A3.2+
+    // (collision) work. Proved during A3.1 that the "explosion" was never a
+    // solver problem (positions stayed finite while hair "vanished").
+    std::atomic<bool> m_watchdog_fired{false};
+    std::atomic<bool> m_watchdog_bones_reported{false};
+    std::atomic<int64_t> m_rt_tick_count{0};
+    // A3.2 subtask 2/3 one-shot verification readbacks (render thread only;
+    // no atomics needed since _rt_sim_tick always runs on that same thread).
+    bool m_coll_skin_check_done = false;
+    bool m_coll_sdf_check_done = false;
     uint64_t m_sim_steps = 0;
+
+    // SDF debug voxel view: render-thread-only state (both the requesting
+    // tick and the completion callback run on the render thread, in FIFO
+    // order, so no atomics/mutex needed here -- only the handoff to the main
+    // thread below needs one). Index-aligned with m_collisionMeshes.
+    std::vector<bool> m_sdf_debug_inflight;
+    bool m_sdf_debug_cap_warned = false;
 
     // Dump metadata cached on the main thread before GPU init so the gate-dump
     // callback never walks the node's containers from the render thread.
@@ -234,6 +325,28 @@ private:
     std::mutex m_readback_mutex;
     godot::PackedByteArray m_readback_positions;
     bool m_readback_new = false;
+
+    // SDF debug voxel view: pre-built MultiMesh instance buffer, written by
+    // _on_sdf_debug_readback_async on the render thread, consumed by _process
+    // on the main thread. Index-aligned with m_collisionMeshes.
+    struct SDFDebugPending {
+        bool has_new = false;
+        godot::PackedFloat32Array buffer; // 16 floats/instance: 12 xform + 4 color (RGBA)
+        int32_t instance_count = 0;
+        float cellSize = 0.0f;
+    };
+    std::mutex m_sdf_debug_mutex;
+    std::vector<SDFDebugPending> m_sdf_debug_pending;
+
+    // Main-thread-only: the live MultiMeshInstance3D per collision mesh (child
+    // of the owning TressFXCollisionNode). Index-aligned with m_collisionMeshes.
+    struct SDFDebugVisual {
+        godot::MultiMeshInstance3D* instance = nullptr;
+        godot::Ref<godot::MultiMesh> multimesh;
+        godot::Ref<godot::BoxMesh> box_mesh;
+        float cellSize = 0.0f;
+    };
+    std::vector<SDFDebugVisual> m_sdf_debug_visuals;
 
     double m_time_seconds = 0.0;
     uint64_t m_frame_index = 0;

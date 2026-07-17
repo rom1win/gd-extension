@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://7uw5pvuvl33m"
+path="res://.godot/imported/TressFXSDFCollision.ConstructSignedDistanceField.comp.glsl-b755f9ffc5999f1fc878149d5ef1974d.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSDFCollision.ConstructSignedDistanceField.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSDFCollision.ConstructSignedDistanceField.comp.glsl-b755f9ffc5999f1fc878149d5ef1974d.res"]
+
+[params]
+

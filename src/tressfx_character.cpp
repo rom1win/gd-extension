@@ -23,11 +23,19 @@
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/aabb.hpp>
+#include <godot_cpp/classes/multi_mesh.hpp>
+#include <godot_cpp/classes/multi_mesh_instance3d.hpp>
+#include <godot_cpp/classes/box_mesh.hpp>
 #include "tressfx_collision_node.h"
 #include "EngineInterface.h"
 #include "Simulation.h"
 #include "HairStrands.h"
 #include "SDF.h"
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <utility>
 #include "GodotScene.h"
 
 using namespace godot;
@@ -94,6 +102,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_gate_capture_mode"), &TressFXCharacter::get_gate_capture_mode);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gate_capture_mode"), "set_gate_capture_mode", "get_gate_capture_mode");
 
+    ClassDB::bind_method(D_METHOD("set_debug_force_fixed_dt", "enabled"), &TressFXCharacter::set_debug_force_fixed_dt);
+    ClassDB::bind_method(D_METHOD("get_debug_force_fixed_dt"), &TressFXCharacter::get_debug_force_fixed_dt);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_force_fixed_dt"), "set_debug_force_fixed_dt", "get_debug_force_fixed_dt");
+
     ClassDB::bind_method(D_METHOD("set_gravity_magnitude", "v"), &TressFXCharacter::set_gravity_magnitude);
     ClassDB::bind_method(D_METHOD("get_gravity_magnitude"), &TressFXCharacter::get_gravity_magnitude);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gravity_magnitude", PROPERTY_HINT_RANGE, "0.0,1.0,0.001"), "set_gravity_magnitude", "get_gravity_magnitude");
@@ -113,6 +125,14 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_local_stiffness", "v"), &TressFXCharacter::set_local_stiffness);
     ClassDB::bind_method(D_METHOD("get_local_stiffness"), &TressFXCharacter::get_local_stiffness);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "local_stiffness", PROPERTY_HINT_RANGE, "0.0,1.0,0.001"), "set_local_stiffness", "get_local_stiffness");
+
+    ClassDB::bind_method(D_METHOD("set_clamp_position_delta", "v"), &TressFXCharacter::set_clamp_position_delta);
+    ClassDB::bind_method(D_METHOD("get_clamp_position_delta"), &TressFXCharacter::get_clamp_position_delta);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "clamp_position_delta", PROPERTY_HINT_RANGE, "0.001,20.0,0.001"), "set_clamp_position_delta", "get_clamp_position_delta");
+
+    ClassDB::bind_method(D_METHOD("set_sdf_collision_enabled", "enabled"), &TressFXCharacter::set_sdf_collision_enabled);
+    ClassDB::bind_method(D_METHOD("get_sdf_collision_enabled"), &TressFXCharacter::get_sdf_collision_enabled);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sdf_collision_enabled"), "set_sdf_collision_enabled", "get_sdf_collision_enabled");
 
     ClassDB::bind_method(D_METHOD("set_hair_fiber_radius", "v"), &TressFXCharacter::set_hair_fiber_radius);
     ClassDB::bind_method(D_METHOD("get_hair_fiber_radius"), &TressFXCharacter::get_hair_fiber_radius);
@@ -224,6 +244,10 @@ void TressFXCharacter::_process(double delta) {
         for (auto& h : m_hairStrands) {
             hair_ptrs.push_back((int64_t)(intptr_t)h.get());
         }
+        PackedInt64Array coll_ptrs;
+        for (auto& c : m_collisionMeshes) {
+            coll_ptrs.push_back((int64_t)(intptr_t)c.get());
+        }
 
         // Arm state BEFORE scheduling: with single-threaded rendering (Godot's
         // default), call_on_render_thread executes the callable INLINE, so
@@ -235,7 +259,7 @@ void TressFXCharacter::_process(double delta) {
 
         RenderingServer::get_singleton()->call_on_render_thread(
             callable_mp(this, &TressFXCharacter::_rt_initialize_gpu)
-                .bind((int64_t)(intptr_t)m_pSimulation.get(), hair_ptrs));
+                .bind((int64_t)(intptr_t)m_pSimulation.get(), hair_ptrs, coll_ptrs));
         if (m_gate_capture_mode) {
             UtilityFunctions::print("TressFXCharacter: GATE A1 capture mode — fixed dt=1/60, identity bones, wind off; dumps at sim steps 1/30/120");
         }
@@ -255,7 +279,7 @@ void TressFXCharacter::_process(double delta) {
 
         const Vector3 wind = m_gate_capture_mode ? Vector3() : m_wind_velocity;
         PackedFloat32Array params;
-        params.resize(8);
+        params.resize(10);
         params[0] = (float)wind.x;
         params[1] = (float)wind.y;
         params[2] = (float)wind.z;
@@ -264,8 +288,14 @@ void TressFXCharacter::_process(double delta) {
         params[5] = m_global_stiffness;
         params[6] = m_global_range;
         params[7] = m_local_stiffness;
+        params[8] = m_clamp_position_delta;
+        // A3.2 subtask 4: gate capture must never run SDF passes -- the
+        // regression baseline predates SDF collision. Computed here (main
+        // thread) and passed by value so _rt_sim_tick never reads node
+        // properties directly on the render thread.
+        params[9] = (m_sdf_collision_enabled && !m_gate_capture_mode) ? 1.0f : 0.0f;
 
-        const double dt = m_gate_capture_mode ? (1.0 / 60.0) : delta;
+        const double dt = (m_gate_capture_mode || m_debug_force_fixed_dt) ? (1.0 / 60.0) : delta;
 
         m_sim_steps++;
         int64_t gate_dump_frame = 0;
@@ -278,10 +308,25 @@ void TressFXCharacter::_process(double delta) {
             hair_ptrs.push_back((int64_t)(intptr_t)h.get());
         }
 
+        // A3.2 subtask 2: same snapshot-on-main-thread pattern as hair bones,
+        // one entry per collision mesh (each has its own EI_Scene/skeleton).
+        Array bones_per_coll;
+        PackedInt64Array coll_ptrs;
+        PackedInt32Array sdf_debug_flags;
+        for (size_t ci = 0; ci < m_collisionMeshes.size(); ++ci) {
+            auto& c = m_collisionMeshes[ci];
+            bones_per_coll.append(c ? c->SnapshotBoneMatrices() : PackedByteArray());
+            coll_ptrs.push_back((int64_t)(intptr_t)c.get());
+            // Node property reads MUST happen here (main thread); the render
+            // thread only ever sees the snapshotted flag.
+            TressFXCollisionNode* node = (ci < m_collisionNodes.size()) ? m_collisionNodes[ci] : nullptr;
+            sdf_debug_flags.push_back((node && node->get_show_sdf_debug()) ? 1 : 0);
+        }
+
         RenderingServer::get_singleton()->call_on_render_thread(
             callable_mp(this, &TressFXCharacter::_rt_sim_tick)
-                .bind(dt, params, bones_per_hair, hair_ptrs,
-                      (int64_t)(intptr_t)m_pSimulation.get(), gate_dump_frame));
+                .bind(dt, params, bones_per_hair, hair_ptrs, bones_per_coll, coll_ptrs,
+                      (int64_t)(intptr_t)m_pSimulation.get(), gate_dump_frame, sdf_debug_flags));
     }
 
     // Consume the latest async readback. Guide positions arrive one or two
@@ -328,6 +373,79 @@ void TressFXCharacter::_process(double delta) {
         }
     }
 
+    // SDF debug voxel view (follow-up, not physics): all Node/MultiMesh work
+    // happens here on the main thread only. Runtime-only per the property's
+    // own contract (this whole block is unreachable in-editor: the early
+    // return above skips _process entirely when in_editor).
+    for (size_t i = 0; i < m_collisionMeshes.size(); ++i) {
+        TressFXCollisionNode* node = (i < m_collisionNodes.size()) ? m_collisionNodes[i] : nullptr;
+        const bool want_debug = node && node->get_show_sdf_debug() && m_sdf_collision_enabled;
+
+        if (i >= m_sdf_debug_visuals.size()) {
+            m_sdf_debug_visuals.resize(i + 1);
+        }
+        SDFDebugVisual& vis = m_sdf_debug_visuals[i];
+
+        if (!want_debug) {
+            if (vis.instance) {
+                vis.instance->set_visible(false);
+            }
+            continue;
+        }
+
+        SDFDebugPending pending;
+        bool has_pending = false;
+        {
+            std::lock_guard<std::mutex> lock(m_sdf_debug_mutex);
+            if (i < m_sdf_debug_pending.size() && m_sdf_debug_pending[i].has_new) {
+                pending = m_sdf_debug_pending[i];
+                m_sdf_debug_pending[i].has_new = false;
+                has_pending = true;
+            }
+        }
+
+        if (has_pending) {
+            if (!vis.instance) {
+                vis.multimesh.instantiate();
+                vis.multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
+                vis.multimesh->set_use_colors(true);
+
+                vis.box_mesh.instantiate();
+                Ref<StandardMaterial3D> mat;
+                mat.instantiate();
+                mat->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
+                mat->set_flag(StandardMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
+                mat->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
+                vis.box_mesh->set_material(mat);
+                vis.multimesh->set_mesh(vis.box_mesh);
+
+                MultiMeshInstance3D* mmi = memnew(MultiMeshInstance3D);
+                mmi->set_name(String("TressFXSDFDebugVoxels_") + String::num_int64((int64_t)i));
+                mmi->set_multimesh(vis.multimesh);
+                node->add_child(mmi);
+                vis.instance = mmi;
+            }
+            if (vis.cellSize != pending.cellSize && vis.box_mesh.is_valid()) {
+                vis.cellSize = pending.cellSize;
+                vis.box_mesh->set_size(Vector3(pending.cellSize, pending.cellSize, pending.cellSize));
+            }
+            vis.multimesh->set_instance_count(pending.instance_count);
+            if (pending.instance_count > 0) {
+                vis.multimesh->set_buffer(pending.buffer);
+            }
+            vis.instance->set_visible(true);
+        }
+
+        // Same mount convention as update_gpu_debug_hair_lines_3d_transform:
+        // the grid origin is in skeleton model space, so the voxel view must
+        // ride the Skeleton3D's own global transform every frame, independent
+        // of the (much rarer) data refresh above.
+        Skeleton3D* sk = (i < m_collisionSkeletons.size()) ? m_collisionSkeletons[i] : nullptr;
+        if (vis.instance && sk) {
+            vis.instance->set_global_transform(sk->get_global_transform());
+        }
+    }
+
     // Optional legacy overlay render: only execute when requested by a UI viewer.
     if (m_overlay_texture_requested && m_last_guide_positions_valid) {
         if (EI_Device* device = GetDevice()) {
@@ -338,7 +456,7 @@ void TressFXCharacter::_process(double delta) {
     m_overlay_texture_requested = false;
 }
 
-void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Array& hair_ptrs) {
+void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Array& hair_ptrs, const PackedInt64Array& coll_ptrs) {
     // RENDER thread. Compile the kernel PSOs and create the GPU hair objects on
     // the main RenderingDevice.
     Simulation* sim = reinterpret_cast<Simulation*>((intptr_t)sim_ptr);
@@ -352,12 +470,21 @@ void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Arra
             h->EnsureTressFXObjectCreated();
         }
     }
+    // A3.2 subtask 1: collision-mesh GPU buffers only (no dispatch/binding yet).
+    for (int64_t i = 0; i < coll_ptrs.size(); ++i) {
+        CollisionMesh* c = reinterpret_cast<CollisionMesh*>((intptr_t)coll_ptrs[i]);
+        if (c) {
+            c->EnsureGPUResourcesCreated();
+        }
+    }
     m_rt_gpu_ready.store(true);
 }
 
 void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         const Array& bones_per_hair, const PackedInt64Array& hair_ptrs,
-        int64_t sim_ptr, int64_t gate_dump_frame) {
+        const Array& bones_per_coll, const PackedInt64Array& coll_ptrs,
+        int64_t sim_ptr, int64_t gate_dump_frame,
+        const PackedInt32Array& sdf_debug_flags) {
     // RENDER thread. Inputs arrive by value; the sim/hair pointers stay valid
     // because teardown_gpu_runtime queues destruction behind this call (FIFO).
     Simulation* sim = reinterpret_cast<Simulation*>((intptr_t)sim_ptr);
@@ -373,6 +500,13 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
             ctx.bone_matrices.push_back((PackedByteArray)bones_per_hair[i]);
         }
     }
+    ctx.collisionMeshes.reserve((size_t)coll_ptrs.size());
+    for (int64_t i = 0; i < coll_ptrs.size(); ++i) {
+        ctx.collisionMeshes.push_back(reinterpret_cast<CollisionMesh*>((intptr_t)coll_ptrs[i]));
+        if (i < bones_per_coll.size()) {
+            ctx.collision_bone_matrices.push_back((PackedByteArray)bones_per_coll[i]);
+        }
+    }
 
     if (params.size() >= 8) {
         ctx.wind_velocity             = Vector3(params[0], params[1], params[2]);
@@ -382,8 +516,126 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         ctx.globalConstraintsRange    = params[6];
         ctx.localConstraintStiffness  = params[7];
     }
+    if (params.size() >= 9) {
+        ctx.clampPositionDelta        = params[8];
+    }
+    bool sdfCollisionActive = false;
+    if (params.size() >= 10) {
+        sdfCollisionActive = params[9] != 0.0f;
+    }
 
-    sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/false, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
+    // A3.1 watchdog, input side: are the bone matrices we are about to feed
+    // the kernels already poisoned? (Tiny scan: <= bones x 16 floats per hair.)
+    const int64_t tick = ++m_rt_tick_count;
+    if (!m_watchdog_bones_reported.load()) {
+        for (size_t h = 0; h < ctx.bone_matrices.size() && !m_watchdog_bones_reported.load(); ++h) {
+            const PackedByteArray& b = ctx.bone_matrices[h];
+            const float* f = reinterpret_cast<const float*>(b.ptr());
+            const int64_t n = (int64_t)b.size() / 4;
+            for (int64_t i = 0; i < n; ++i) {
+                if (!std::isfinite(f[i])) {
+                    m_watchdog_bones_reported.store(true);
+                    UtilityFunctions::print("TressFX WATCHDOG: NON-FINITE BONE MATRIX at sim tick ", tick,
+                        " hair=", (int64_t)h, " bone=", i / 16, " element=", i % 16, " value=", f[i]);
+                    break;
+                }
+            }
+        }
+    }
+
+    // A3.2 subtask 4: both flags follow sdf_collision_enabled (see params[9]
+    // above) -- skinning/SDF build only run when collision response will
+    // actually consume them. With the property off, the SKIN CHECK / SDF
+    // CHECK one-shots below simply never fire (they were subtask 2/3
+    // verification hooks; still functional when the property is on).
+    sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/sdfCollisionActive, /*bSDFCollisionResponse=*/sdfCollisionActive, /*bAsync=*/false);
+
+    // A3.2 subtask 2 one-shot verification: self-checks the kernel against a
+    // CPU reference computed from the SAME bone-matrix snapshot bytes used
+    // for this tick's GPU dispatch (ctx.collision_bone_matrices[0], still in
+    // scope -- not re-snapshotted, so this is valid even under animation).
+    // Fires once, ~sim tick 30, independent of the hair readback path below.
+    if (!m_coll_skin_check_done && tick >= 30 && !ctx.collisionMeshes.empty()) {
+        m_coll_skin_check_done = true;
+        CollisionMesh* c = ctx.collisionMeshes[0];
+        RenderingServer* rs_check = RenderingServer::get_singleton();
+        RenderingDevice* rd_check = rs_check ? rs_check->get_rendering_device() : nullptr;
+        if (c && c->IsValid() && rd_check) {
+            const RID skin_rid = c->GetSkinnedPositionsRID();
+            if (skin_rid.is_valid()) {
+                const int vb = std::min(6454, c->GetNumVertices() - 1);
+                const PackedByteArray bones = (!ctx.collision_bone_matrices.empty()) ? ctx.collision_bone_matrices[0] : PackedByteArray();
+                const Vector3 cpu_a = c->CpuSkinVertex(0, bones);
+                const Vector3 cpu_b = c->CpuSkinVertex(vb, bones);
+                rd_check->buffer_get_data_async(skin_rid,
+                    callable_mp(this, &TressFXCharacter::_on_coll_skin_check_async)
+                        .bind(c->GetRestPosition(0), c->GetRestPosition(vb), (int64_t)vb, cpu_a, cpu_b));
+            }
+        }
+    }
+
+    // A3.2 subtask 3 one-shot verification: reads back the SDF grid built
+    // this tick (same timing/rationale as the skin check above -- fires
+    // once, ~sim tick 30). Only the valid prefix (numCellsX*Y*Z cells) is
+    // requested; the grid buffer itself is ~1.4x larger (AMD's own headroom)
+    // and the tail is never written by InitializeSignedDistanceField, so
+    // reading it would show meaningless driver-default bytes.
+    if (!m_coll_sdf_check_done && tick >= 30 && !ctx.collisionMeshes.empty()) {
+        m_coll_sdf_check_done = true;
+        CollisionMesh* c = ctx.collisionMeshes[0];
+        RenderingServer* rs_sdf_check = RenderingServer::get_singleton();
+        RenderingDevice* rd_sdf_check = rs_sdf_check ? rs_sdf_check->get_rendering_device() : nullptr;
+        if (c && c->IsValid() && rd_sdf_check) {
+            const RID sdf_rid = c->GetSDFGridRID();
+            const int64_t numCellsX = c->GetSDFNumCellsX();
+            const int64_t numCellsY = c->GetSDFNumCellsY();
+            const int64_t numCellsZ = c->GetSDFNumCellsZ();
+            const int64_t validCells = numCellsX * numCellsY * numCellsZ;
+            if (sdf_rid.is_valid() && validCells > 0) {
+                rd_sdf_check->buffer_get_data_async(sdf_rid,
+                    callable_mp(this, &TressFXCharacter::_on_coll_sdf_check_async)
+                        .bind(numCellsX, numCellsY, numCellsZ, (double)c->GetSDFCellSize()),
+                    0, (uint32_t)(validCells * (int64_t)sizeof(uint32_t)));
+            }
+        }
+    }
+
+    // SDF debug voxel view (follow-up, not physics): periodic (~every 30
+    // ticks) read-only readback of the finalized grid, per collision mesh
+    // whose owning node has show_sdf_debug on (sdf_debug_flags, snapshotted
+    // on the main thread in _process). Gated on sdfCollisionActive too --
+    // when collision response is off, StartSimulation above never rebuilds
+    // the grid (bUpdateCollMesh=false), so there is nothing fresh to read.
+    // A mesh already awaiting a previous readback is skipped: completions
+    // land on this same render thread in submission order, so a plain
+    // vector<bool> is enough state (no atomics/mutex needed).
+    if (m_sdf_debug_inflight.size() < ctx.collisionMeshes.size()) {
+        m_sdf_debug_inflight.resize(ctx.collisionMeshes.size(), false);
+    }
+    constexpr int64_t kSdfDebugReadbackInterval = 30;
+    if (sdfCollisionActive && (tick % kSdfDebugReadbackInterval) == 0) {
+        RenderingServer* rs_dbg = RenderingServer::get_singleton();
+        RenderingDevice* rd_dbg = rs_dbg ? rs_dbg->get_rendering_device() : nullptr;
+        if (rd_dbg) {
+            for (size_t i = 0; i < ctx.collisionMeshes.size(); ++i) {
+                if ((int64_t)i >= sdf_debug_flags.size() || sdf_debug_flags[(int)i] == 0) continue;
+                if (m_sdf_debug_inflight[i]) continue;
+                CollisionMesh* c = ctx.collisionMeshes[i];
+                if (!c || !c->IsValid()) continue;
+                const RID sdf_rid = c->GetSDFGridRID();
+                const int64_t numCellsX = c->GetSDFNumCellsX();
+                const int64_t numCellsY = c->GetSDFNumCellsY();
+                const int64_t numCellsZ = c->GetSDFNumCellsZ();
+                const int64_t validCells = numCellsX * numCellsY * numCellsZ;
+                if (!sdf_rid.is_valid() || validCells <= 0) continue;
+                m_sdf_debug_inflight[i] = true;
+                rd_dbg->buffer_get_data_async(sdf_rid,
+                    callable_mp(this, &TressFXCharacter::_on_sdf_debug_readback_async)
+                        .bind((int64_t)i, c->GetSDFGridOrigin(), numCellsX, numCellsY, numCellsZ, (double)c->GetSDFCellSize()),
+                    0, (uint32_t)(validCells * (int64_t)sizeof(uint32_t)));
+            }
+        }
+    }
 
     // Queue async readbacks AFTER the dispatches so the data reflects this step.
     if (ctx.hairStrands.empty() || !ctx.hairStrands[0]) {
@@ -422,7 +674,229 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
     }
 }
 
+void TressFXCharacter::_on_coll_skin_check_async(const PackedByteArray& data, Vector3 rest_a, Vector3 rest_b,
+        int64_t vertex_b, Vector3 cpu_a, Vector3 cpu_b) {
+    // Render-thread callback. Interleaved StandardVertex layout (32 bytes/vertex:
+    // position.xyz+pad, normal.xyz+pad) -- matches CollisionMesh::EnsureGPUResourcesCreated.
+    const int64_t need_floats = (vertex_b + 1) * 8;
+    if (data.size() < need_floats * 4) {
+        UtilityFunctions::print("CollisionMesh SKIN CHECK: readback too small (", (int64_t)data.size(), " bytes)");
+        return;
+    }
+    const float* f = reinterpret_cast<const float*>(data.ptr());
+    const Vector3 gpu_a(f[0], f[1], f[2]);
+    const int64_t off_b = vertex_b * 8;
+    const Vector3 gpu_b(f[off_b + 0], f[off_b + 1], f[off_b + 2]);
+    UtilityFunctions::print(
+        "CollisionMesh SKIN CHECK: v0 rest=(", String::num(rest_a.x, 3), ",", String::num(rest_a.y, 3), ",", String::num(rest_a.z, 3),
+        ") gpu=(", String::num(gpu_a.x, 3), ",", String::num(gpu_a.y, 3), ",", String::num(gpu_a.z, 3),
+        ") cpu=(", String::num(cpu_a.x, 3), ",", String::num(cpu_a.y, 3), ",", String::num(cpu_a.z, 3),
+        ")  v", vertex_b, " rest=(", String::num(rest_b.x, 3), ",", String::num(rest_b.y, 3), ",", String::num(rest_b.z, 3),
+        ") gpu=(", String::num(gpu_b.x, 3), ",", String::num(gpu_b.y, 3), ",", String::num(gpu_b.z, 3),
+        ") cpu=(", String::num(cpu_b.x, 3), ",", String::num(cpu_b.y, 3), ",", String::num(cpu_b.z, 3), ")");
+
+    // Self-check pass bar: gpu ≈ cpu within float-readback tolerance,
+    // regardless of distance from rest (rest-vs-skinned distance alone can't
+    // distinguish "kernel bug" from "legitimately posed at capture time").
+    const float tol = 1e-3f;
+    const float diff_a = std::max({ std::abs(gpu_a.x - cpu_a.x), std::abs(gpu_a.y - cpu_a.y), std::abs(gpu_a.z - cpu_a.z) });
+    const float diff_b = std::max({ std::abs(gpu_b.x - cpu_b.x), std::abs(gpu_b.y - cpu_b.y), std::abs(gpu_b.z - cpu_b.z) });
+    if (diff_a > tol || diff_b > tol) {
+        UtilityFunctions::push_warning(
+            String("CollisionMesh SKIN CHECK: GPU/CPU MISMATCH exceeds tolerance ") + String::num(tol, 4) +
+            String(": max|diff| v0=") + String::num(diff_a, 6) +
+            String(" v") + String::num_int64(vertex_b) + String("=") + String::num(diff_b, 6));
+    } else {
+        UtilityFunctions::print("CollisionMesh SKIN CHECK: PASS (gpu matches cpu reference within ", String::num(tol, 4), ")");
+    }
+}
+
+void TressFXCharacter::_on_coll_sdf_check_async(const PackedByteArray& data, int64_t numCellsX, int64_t numCellsY,
+        int64_t numCellsZ, double cellSize) {
+    // Render-thread callback. Buffer holds plain IEEE-754 float bit patterns
+    // (FinalizeSignedDistanceField already undid the FloatFlip encoding), one
+    // uint32 per grid cell, requested as the numCellsX*Y*Z prefix only (see
+    // the dispatch site in _rt_sim_tick).
+    const int64_t totalCells = numCellsX * numCellsY * numCellsZ;
+    const int64_t need_bytes = totalCells * (int64_t)sizeof(uint32_t);
+    if (totalCells <= 0 || data.size() < need_bytes) {
+        UtilityFunctions::print("CollisionMesh SDF CHECK: readback too small (", (int64_t)data.size(),
+            " bytes, expected ", need_bytes, ")");
+        return;
+    }
+
+    const uint32_t* raw = reinterpret_cast<const uint32_t*>(data.ptr());
+    int64_t insideCount = 0;
+    bool anyNaN = false;
+    float minVal = std::numeric_limits<float>::infinity();
+    float maxVal = -std::numeric_limits<float>::infinity();
+    for (int64_t i = 0; i < totalCells; ++i) {
+        float v;
+        std::memcpy(&v, &raw[i], sizeof(float));
+        if (!std::isfinite(v)) {
+            anyNaN = true;
+            continue;
+        }
+        if (v < 0.0f) {
+            ++insideCount;
+        }
+        minVal = std::min(minVal, v);
+        maxVal = std::max(maxVal, v);
+    }
+
+    UtilityFunctions::print(
+        "CollisionMesh SDF CHECK: cells=", totalCells, " (", numCellsX, "*", numCellsY, "*", numCellsZ,
+        ") cellSize=", String::num(cellSize, 5), " inside=", insideCount,
+        " min=", String::num(minVal, 4), " max=", String::num(maxVal, 4));
+
+    // Pass bar: a solid body interior exists (inside > 0) but is a minority
+    // of the (heavily padded) grid volume; min is negative on the order of a
+    // body half-thickness (a few cm to a few tens of cm, never meters); max
+    // is finite and no NaN/Inf anywhere. Cells far from the mesh legitimately
+    // stay at INITIAL_DISTANCE (1e10, see the Initialize kernel) -- max
+    // landing exactly there is expected, not a bug (the heavily padded grid
+    // has plenty of empty corners no triangle's local AABB ever reaches).
+    constexpr float kInitialDistance = 1e10f;
+    constexpr float kExpectedMinFloor = -1.0f; // generous upper bound on body half-thickness
+    constexpr double kMaxInsideFraction = 0.5; // interior should be a minority of the padded grid
+    const double insideFraction = (double)insideCount / (double)totalCells;
+    const bool pass = !anyNaN
+            && insideCount > 0
+            && insideFraction < kMaxInsideFraction
+            && minVal < 0.0f && minVal > kExpectedMinFloor
+            && maxVal > 0.0f && maxVal <= kInitialDistance;
+    if (pass) {
+        UtilityFunctions::print("CollisionMesh SDF CHECK: PASS");
+    } else {
+        UtilityFunctions::print(
+            "CollisionMesh SDF CHECK: SUSPICIOUS (expected: no NaN, inside>0, inside_fraction<",
+            String::num(kMaxInsideFraction, 2), " [got ", String::num(insideFraction, 4),
+            "], min in (", String::num(kExpectedMinFloor, 2), ",0) [got ", String::num(minVal, 4),
+            "], 0<max<=", String::num(kInitialDistance, 0), " [got ", String::num(maxVal, 4), "])");
+    }
+}
+
+void TressFXCharacter::_on_sdf_debug_readback_async(const PackedByteArray& data, int64_t collIndex,
+        Vector3 origin, int64_t numCellsX, int64_t numCellsY, int64_t numCellsZ, double cellSize) {
+    // Render thread. Same buffer contents as _on_coll_sdf_check_async (plain
+    // float bit patterns, one per grid cell, negative = inside the body).
+    if (collIndex >= 0 && (size_t)collIndex < m_sdf_debug_inflight.size()) {
+        m_sdf_debug_inflight[collIndex] = false;
+    }
+
+    const int64_t totalCells = numCellsX * numCellsY * numCellsZ;
+    const int64_t need_bytes = totalCells * (int64_t)sizeof(uint32_t);
+    if (totalCells <= 0 || data.size() < need_bytes) {
+        return;
+    }
+    const uint32_t* raw = reinterpret_cast<const uint32_t*>(data.ptr());
+
+    // Pass 1: find the deepest (most negative) inside value, to normalize the
+    // shallow(green)->deep(red) color ramp below.
+    int64_t insideCount = 0;
+    float minVal = 0.0f;
+    for (int64_t i = 0; i < totalCells; ++i) {
+        float v;
+        std::memcpy(&v, &raw[i], sizeof(float));
+        if (std::isfinite(v) && v < 0.0f) {
+            ++insideCount;
+            minVal = std::min(minVal, v);
+        }
+    }
+
+    SDFDebugPending pending;
+    pending.cellSize = (float)cellSize;
+
+    if (insideCount > 0) {
+        constexpr int32_t kMaxDebugInstances = 200000;
+        const float depthNorm = std::max(-minVal, 1e-6f);
+        const int64_t nx = numCellsX;
+        const int64_t nxny = numCellsX * numCellsY;
+        pending.buffer.resize((int)(std::min<int64_t>(insideCount, kMaxDebugInstances) * 16));
+        float* out = pending.buffer.ptrw();
+        int32_t written = 0;
+        for (int64_t i = 0; i < totalCells; ++i) {
+            float v;
+            std::memcpy(&v, &raw[i], sizeof(float));
+            if (!std::isfinite(v) || v >= 0.0f) continue;
+            if (written >= kMaxDebugInstances) {
+                if (!m_sdf_debug_cap_warned) {
+                    m_sdf_debug_cap_warned = true;
+                    UtilityFunctions::push_warning(
+                        "TressFXCharacter: SDF debug voxel view capped at ", kMaxDebugInstances,
+                        " instances (grid has more inside cells than that).");
+                }
+                break;
+            }
+            const int64_t x = i % nx;
+            const int64_t y = (i / nx) % numCellsY;
+            const int64_t z = i / nxny;
+            // Cell (x,y,z)'s world position is origin + (x,y,z)*cellSize at its
+            // lower corner (TressFXSDFCollision.hlsl GetSdfCellPosition) -- the
+            // cube center is that corner plus half a cell.
+            const Vector3 center = origin + Vector3((float)x + 0.5f, (float)y + 0.5f, (float)z + 0.5f) * (float)cellSize;
+
+            const float t = std::clamp(-v / depthNorm, 0.0f, 1.0f);
+            const Color shallow(0.0f, 1.0f, 0.0f, 0.15f);
+            const Color deep(1.0f, 0.0f, 0.0f, 0.6f);
+            const Color col = shallow.lerp(deep, t);
+
+            float* slot = out + (size_t)written * 16;
+            // Identity basis (row-major 3x3 + translation), box mesh is
+            // already sized to cellSize -- no per-instance scale needed.
+            slot[0] = 1.0f; slot[1] = 0.0f; slot[2] = 0.0f; slot[3] = center.x;
+            slot[4] = 0.0f; slot[5] = 1.0f; slot[6] = 0.0f; slot[7] = center.y;
+            slot[8] = 0.0f; slot[9] = 0.0f; slot[10] = 1.0f; slot[11] = center.z;
+            slot[12] = col.r; slot[13] = col.g; slot[14] = col.b; slot[15] = col.a;
+            ++written;
+        }
+        pending.instance_count = written;
+    } else {
+        pending.instance_count = 0;
+    }
+    pending.has_new = true;
+
+    std::lock_guard<std::mutex> lock(m_sdf_debug_mutex);
+    if ((size_t)collIndex >= m_sdf_debug_pending.size()) {
+        m_sdf_debug_pending.resize(collIndex + 1);
+    }
+    m_sdf_debug_pending[collIndex] = std::move(pending);
+}
+
 void TressFXCharacter::_on_positions_async(const PackedByteArray& data) {
+    // A3.1 watchdog, output side: find the FIRST vertex the sim corrupted.
+    // Full scan per tick until it fires once, then permanently quiet.
+    if (!m_watchdog_fired.load() && data.size() >= 16 && m_gate_vps > 0) {
+        const float* f = reinterpret_cast<const float*>(data.ptr());
+        const int64_t n = (int64_t)data.size() / 4;
+        int64_t bad = -1;
+        float max_abs = 0.0f;
+        int64_t max_idx = 0;
+        for (int64_t i = 0; i < n; ++i) {
+            if ((i & 3) == 3) continue; // skip w components (inverse mass, not a position)
+            const float v = f[i];
+            if (!std::isfinite(v)) { bad = i; break; }
+            const float a = std::abs(v);
+            if (a > max_abs) { max_abs = a; max_idx = i; }
+        }
+        // No NaN/inf but a vertex kilometers away is the same failure teleporting.
+        const bool teleport = (bad < 0 && max_abs > 1000.0f);
+        if (bad >= 0 || teleport) {
+            m_watchdog_fired.store(true);
+            const int64_t fidx = (bad >= 0) ? bad : max_idx;
+            const int64_t vertex = fidx / 4;
+            const int64_t strand = vertex / m_gate_vps;
+            const int64_t local = vertex % m_gate_vps;
+            const int64_t slot = (m_gate_stride > 0) ? (strand % m_gate_stride) : 0;
+            UtilityFunctions::print("TressFX WATCHDOG: first bad position at sim tick ~", m_rt_tick_count.load(),
+                (bad >= 0) ? " (NON-FINITE)" : " (TELEPORT)",
+                ": vertex=", vertex,
+                " strand=", strand, (slot == 0) ? " [GUIDE]" : " [follow]",
+                " local_vertex=", local, "/", (int64_t)m_gate_vps,
+                " xyz=(", f[vertex * 4 + 0], ", ", f[vertex * 4 + 1], ", ", f[vertex * 4 + 2], ")");
+        }
+    }
+
     // Render-thread callback: just stash; _process consumes on the main thread.
     std::lock_guard<std::mutex> lock(m_readback_mutex);
     m_readback_positions = data;
@@ -500,7 +974,7 @@ void TressFXCharacter::register_hair_description(const TressFXHairNode::TressFXO
     UtilityFunctions::print(String("TressFXCharacter: registered hair: ") + desc.tfx_file);
 }
 
-void TressFXCharacter::register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc) {
+void TressFXCharacter::register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc, TressFXCollisionNode *node) {
     // Dedupe by tfx_mesh_file to avoid duplicate registrations.
     for (const auto &existing : m_collisionDescriptions) {
         if (existing.tfx_mesh_file == desc.tfx_mesh_file) {
@@ -509,6 +983,8 @@ void TressFXCharacter::register_collision_description(const TressFXHairNode::Tre
         }
     }
     m_collisionDescriptions.push_back(desc);
+    // Index-aligned with m_collisionDescriptions (see m_collisionNodes doc).
+    m_collisionNodes.push_back(node);
     UtilityFunctions::print(
         String("TressFXCharacter: registered collision: ") + desc.tfx_mesh_file +
         String(" followBone='") + desc.followBone +
@@ -573,6 +1049,7 @@ void TressFXCharacter::load_all_assets() {
     m_hairStrands.clear();
     m_collisionMeshes.clear();
     m_adapterScenes.clear();
+    m_collisionSkeletons.clear();
 
     UtilityFunctions::print(String("TressFXCharacter: creating adapter objects..."));
 
@@ -588,7 +1065,8 @@ void TressFXCharacter::load_all_assets() {
             String("' bone='") + d.tfx_bone_file +
             String("' obj='") + d.hair_object_name +
             String("' follow=") + String::num_int64(d.num_follow_hairs) +
-            String(" tip=") + String::num(d.tip_separation, 3));
+            String(" tip=") + String::num(d.tip_separation, 3) +
+            String(" followRadius=") + String::num(d.follow_hair_radius, 4));
 
         m_adapterScenes.push_back(std::make_unique<EI_Scene>());
         m_adapterScenes.back()->set_skeleton(default_skeleton);
@@ -604,6 +1082,7 @@ void TressFXCharacter::load_all_assets() {
             obj.get_data(),
             d.num_follow_hairs,
             d.tip_separation,
+            d.follow_hair_radius,
             /*skinNumber=*/0,
             /*renderIndex=*/i));
     }
@@ -649,7 +1128,11 @@ void TressFXCharacter::load_all_assets() {
             d.numCellsInXAxis,
             d.collisionMargin,
             /*skinNumber=*/0,
-            follow.get_data()));
+            follow.get_data(),
+            d.sdf_padding_cells));
+        // Index-aligned with m_collisionMeshes: mount transform for the SDF
+        // debug voxel view (see m_collisionSkeletons doc).
+        m_collisionSkeletons.push_back(collision_skeleton);
     }
 
     UtilityFunctions::print(
@@ -743,6 +1226,14 @@ bool TressFXCharacter::get_gate_capture_mode() const {
     return m_gate_capture_mode;
 }
 
+void TressFXCharacter::set_debug_force_fixed_dt(bool enabled) {
+    m_debug_force_fixed_dt = enabled;
+}
+
+bool TressFXCharacter::get_debug_force_fixed_dt() const {
+    return m_debug_force_fixed_dt;
+}
+
 void TressFXCharacter::set_wind_velocity(const godot::Vector3& wind_velocity) {
     m_wind_velocity = wind_velocity;
 }
@@ -765,6 +1256,12 @@ float TressFXCharacter::get_global_range() const { return m_global_range; }
 
 void TressFXCharacter::set_local_stiffness(float v) { m_local_stiffness = v; }
 float TressFXCharacter::get_local_stiffness() const { return m_local_stiffness; }
+
+void TressFXCharacter::set_clamp_position_delta(float v) { m_clamp_position_delta = v; }
+float TressFXCharacter::get_clamp_position_delta() const { return m_clamp_position_delta; }
+
+void TressFXCharacter::set_sdf_collision_enabled(bool enabled) { m_sdf_collision_enabled = enabled; }
+bool TressFXCharacter::get_sdf_collision_enabled() const { return m_sdf_collision_enabled; }
 
 void TressFXCharacter::set_hair_fiber_radius(float v) {
     m_hair_fiber_radius = v;
@@ -890,17 +1387,10 @@ void TressFXCharacter::refresh_gpu_debug_hair_lines_3d() {
     add_child(debug_root);
     m_gpu_debug_root = debug_root;
 
+    // No BoneAttachment3D anchor anymore: sim output is in skeleton model
+    // space (bone motion lives in the skinning matrices), so the mount is the
+    // Skeleton3D transform itself -- see update_gpu_debug_hair_lines_3d_transform.
     m_gpu_debug_anchor = nullptr;
-    if (m_debug_skeleton && !m_debug_follow_bone.is_empty()) {
-        const int bone_idx = m_debug_skeleton->find_bone(m_debug_follow_bone);
-        if (bone_idx >= 0) {
-            BoneAttachment3D* attach = memnew(BoneAttachment3D);
-            attach->set_name(String("TressFXGPUDebugHairAnchor_") + m_debug_follow_bone);
-            attach->set_bone_name(StringName(m_debug_follow_bone));
-            m_debug_skeleton->add_child(attach);
-            m_gpu_debug_anchor = attach;
-        }
-    }
 
     update_gpu_debug_hair_lines_3d_transform();
 
@@ -1003,10 +1493,18 @@ void TressFXCharacter::update_gpu_debug_hair_lines_3d_transform() {
         return;
     }
 
+    // The sim outputs positions in SKELETON MODEL SPACE: the skinning matrices
+    // (pose x rest^-1) already contain every bone's motion, including the root
+    // bone's. So the only correct render mount is the Skeleton3D's own global
+    // transform. Parenting to the root-bone BoneAttachment3D (the pre-A3 code)
+    // applied the root bone's pose a SECOND time -- invisible while the
+    // skeleton was never animated (an attachment on a never-dirtied skeleton
+    // keeps its initial transform), but the first real pose write snapped the
+    // anchor to the root joint's saved pose and teleported all the hair
+    // (A3.1's "hair vanishes when the head shakes" was this, not a solver
+    // explosion -- the watchdog showed perfectly healthy positions).
     Transform3D t;
-    if (m_gpu_debug_anchor) {
-        t = m_gpu_debug_anchor->get_global_transform();
-    } else if (m_debug_skeleton) {
+    if (m_debug_skeleton) {
         t = m_debug_skeleton->get_global_transform();
     } else {
         t = get_global_transform();
@@ -1100,6 +1598,19 @@ void TressFXCharacter::build_ribbon_mesh_if_needed() {
     placeholder_positions.resize(vertex_count);
     godot::PackedVector2Array vertex_uv; // x = global vertex index, y = side (0 -> -1, 1 -> +1)
     vertex_uv.resize(vertex_count);
+    // Placeholder only: the shader fully overwrites TANGENT (and NORMAL/BINORMAL)
+    // from the position texture every frame. Godot's renderer still requires the
+    // mesh's vertex format to declare a tangent slot exists whenever the shader
+    // writes TANGENT/BINORMAL, or it warns every frame ("requires tangents with
+    // a mesh that doesn't contain tangents") -- these values are never read.
+    godot::PackedFloat32Array vertex_tangents;
+    vertex_tangents.resize(vertex_count * 4);
+    for (int64_t t = 0; t < vertex_count; ++t) {
+        vertex_tangents[t * 4 + 0] = 1.0f;
+        vertex_tangents[t * 4 + 1] = 0.0f;
+        vertex_tangents[t * 4 + 2] = 0.0f;
+        vertex_tangents[t * 4 + 3] = 1.0f;
+    }
     godot::PackedInt32Array indices;
     indices.resize(index_count);
 
@@ -1131,6 +1642,7 @@ void TressFXCharacter::build_ribbon_mesh_if_needed() {
     arrays.resize(godot::Mesh::ARRAY_MAX);
     arrays[godot::Mesh::ARRAY_VERTEX] = placeholder_positions;
     arrays[godot::Mesh::ARRAY_TEX_UV] = vertex_uv;
+    arrays[godot::Mesh::ARRAY_TANGENT] = vertex_tangents;
     arrays[godot::Mesh::ARRAY_INDEX] = indices;
 
     m_gpu_ribbon_mesh.instantiate();

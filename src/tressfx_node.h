@@ -20,6 +20,10 @@ public:
         int mesh_surface_index = 0;
         int num_follow_hairs = 1;
         float tip_separation = 1.0f;
+        // Max random offset (meters) of each follow hair around its guide.
+        // 0 = follow hairs sit exactly on their guides (invisible duplicates).
+        // 0.012 is AMD's own sample value (NOTES.md issue H2).
+        float follow_hair_radius = 0.012f;
     };
 
     struct TressFXCollisionMeshDescription {
@@ -32,6 +36,11 @@ public:
         // NodePath (string) to the Skeleton3D node in the scene. Optional — used
         // by the editor/runtime to resolve bone transforms for followBone.
         String skeleton_node_path;
+        // SDF grid padding, in cells, applied to the rest-pose AABB on every
+        // axis before sizing the grid (see CollisionMesh::EnsureSDFPSOCreated).
+        // 40 matches AMD's own derivation (0.8 * numCellsInXAxis) at the
+        // scene's default numCellsInXAxis=50, so this default is a no-op.
+        int sdf_padding_cells = 40;
     };
 
 protected:
@@ -63,6 +72,9 @@ public:
     void set_tip_separation(float p) { tip_separation = p; }
     float get_tip_separation() const { return tip_separation; }
 
+    void set_follow_hair_radius(float p) { follow_hair_radius = p; }
+    float get_follow_hair_radius() const { return follow_hair_radius; }
+
     // Public API exposed to scripts
     void load_tfx_asset();
     void bind_to_godot_mesh(const NodePath &mesh_node_path);
@@ -79,6 +91,7 @@ private:
     int mesh_surface_index = 0;
     int num_follow_hairs = 1;
     float tip_separation = 1.0f;
+    float follow_hair_radius = 0.012f;
 
     // node path to target mesh (set via inspector or bind call)
     NodePath target_mesh_path;

@@ -82,11 +82,11 @@ std::vector<XMMATRIX>& EI_Scene::GetWorldSpaceSkeletonMats(int /*skinNumber*/) {
         return m_cached_world_mats;
     }
 
-    const uint64_t version = m_skeleton->get_version();
-    if (version == m_cached_skeleton_version && !m_cached_world_mats.empty()) {
-        return m_cached_world_mats;
-    }
-
+    // NO caching here. Skeleton3D::get_version() only tracks STRUCTURAL
+    // changes (bones added/removed/re-parented) -- it does NOT bump on
+    // per-frame pose changes, so a version-keyed cache serves the startup
+    // pose forever and animation never reaches the sim (A3.1 "roots don't
+    // follow the head" bug). Recomputing ~100 matrices per frame is trivial.
     const int32_t bone_count = m_skeleton->get_bone_count();
     m_cached_world_mats.resize(bone_count);
 
@@ -100,6 +100,5 @@ std::vector<XMMATRIX>& EI_Scene::GetWorldSpaceSkeletonMats(int /*skinNumber*/) {
         m_cached_world_mats[i] = transform3d_to_xmmatrix(skin);
     }
 
-    m_cached_skeleton_version = version;
     return m_cached_world_mats;
 }

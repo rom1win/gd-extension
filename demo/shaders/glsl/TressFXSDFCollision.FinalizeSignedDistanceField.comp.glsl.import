@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://berkybbyd8nl8"
+path="res://.godot/imported/TressFXSDFCollision.FinalizeSignedDistanceField.comp.glsl-bf4e27d08d1b79f4539e6cd4b8e23565.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSDFCollision.FinalizeSignedDistanceField.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSDFCollision.FinalizeSignedDistanceField.comp.glsl-bf4e27d08d1b79f4539e6cd4b8e23565.res"]
+
+[params]
+

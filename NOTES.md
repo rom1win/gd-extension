@@ -224,3 +224,77 @@ Consequences:
 - Regression protection: reference dumps at fixed dt=1/60 frames 1/30/120 in
   reference/ + tools/compare_dump.py (capture via gdscript_hair.tscn with
   capture_reference=true -> reference_new/).
+
+## 10. SDF collision (A3.2)
+
+Four new kernels, additive to the six audited `TressFXSimulation.*.comp.glsl`
+kernels above (untouched). All four run only while `sdf_collision_enabled`
+(TressFXCharacter property, default `false`) is on, and `gate_capture_mode`
+forces them off unconditionally (the regression baseline in `reference/`
+predates SDF collision).
+
+**The four kernels, in per-frame dispatch order** (all inside
+`Simulation::StartSimulation`, `src/Simulation.cpp`):
+
+1. `TressFXBoneSkinning.BoneSkinning` (`demo/shaders/glsl/
+   TressFXBoneSkinning.BoneSkinning.comp.glsl`, audit note S1) — skins the
+   `.tfxmesh` collision mesh to the current bone pose. One thread per
+   collision-mesh vertex. Runs BEFORE the six sim kernels, per collision mesh.
+2. `TressFXSDFCollision.InitializeSignedDistanceField` (audit note S2) —
+   resets every grid cell to `INITIAL_DISTANCE` (1e10). One thread per cell.
+3. `TressFXSDFCollision.ConstructSignedDistanceField` (audit note S2) —
+   atomic-min splats each triangle's signed distance into every grid cell in
+   its padded AABB (`FloatFlip3`-encoded so `atomicMin` works on a `uint`
+   buffer — no native float atomic_min exists). One thread per triangle.
+4. `TressFXSDFCollision.FinalizeSignedDistanceField` (audit note S2) —
+   undoes the `FloatFlip3` encoding, restoring plain IEEE-754 float bit
+   patterns. One thread per cell. Steps 2–4 run per collision mesh,
+   immediately after step 1 for that mesh, with a UAV barrier between each.
+5. `TressFXSDFCollision.CollideHairVerticesWithSdf_forward` (audit note S3) —
+   projects any hair vertex found inside the collision margin back out along
+   the SDF's gradient (trilinear-sampled, forward-difference gradient). One
+   thread per hair vertex (guides AND follow hairs, both live in the same
+   position buffer). Runs AFTER `m_tressFXSimulation->Simulate()` (all six
+   sim kernels, `UpdateFollowHairVertices` last) has finished for the whole
+   frame, BEFORE the sim→render UAV→SRV transition — this ordering comes from
+   `TressFXHairObject.cpp`'s own data-flow comment ("Simulate updates
+   mPositions... SDF updates mPositions... Render with mPositions"), the only
+   place in the vendored tree that documents it. Nested loop: every hair
+   object collides against every collision mesh (1×1 in practice today).
+
+**Buffers / bind layouts** (all vendored, `TressFXLayouts.cpp`, unchanged):
+`CreateBoneSkinningLayout` (bone-skinning data, initial + skinned vertex
+positions, bone-matrix UBO), `CreateGenerateSDFLayout` (triangle indices, SDF
+grid, skinned vertex positions, `ConstBuffer_SDF` UBO — shared by kernels
+2–5, one `EI_BindSet` per `CollisionMesh`), `CreateApplySDFLayout`
+(`g_HairVertices`/`g_PrevHairVertices`, both RW — ONE bind set PER HAIR
+OBJECT, created automatically by the vendored `TressFXHairObject::
+CreateGPUResources` over that object's own Positions/PositionsPrev buffers,
+the SAME buffers the six sim kernels read/write). Kernel 5's PSO is the first
+in this codebase to use two bind sets/layouts at once: set 0 =
+`GenerateSDFLayout` (reused from kernels 2–4), set 1 = `ApplySDFLayout`
+(newly assigned set_index 1 the first time any PSO references it).
+
+**Grid sizing rule** (`CollisionMesh::EnsureSDFPSOCreated`, `src/SDF.cpp`,
+faithful port of `TressFXSDFCollision`'s constructor): cell size and grid
+dimensions are computed ONCE, from the mesh's REST-POSE (tight) AABB —
+`cellSize = (aabbMax.x - aabbMin.x) / numCellsInXAxis`, then the box is
+padded by `0.8 * numCellsInXAxis` cells on every axis, and the grid
+allocates 40% more total cells than the padded box needs (headroom; never
+read past the exact `numCellsX*Y*Z`). Only the grid ORIGIN is recomputed
+every frame (`CollisionMesh::UpdateSDF`), tracking the mesh's rigid motion by
+applying the follow bone's current skinning matrix to the rest-pose box's
+CENTER and translating the whole fixed-size box by that delta — no GPU
+bounding-box readback, matching AMD's own `TressFXBoneSkinning::
+GetBoundingBox()` scheme exactly. Ratboy's grid: `cellSize≈0.00992` m,
+`130×172×125` cells (`numCellsInXAxis=50`, `Collision_body` node in
+`demo/ratboy_node.tscn`).
+
+**The `sdf_collision_enabled` gate.** `TressFXCharacter::_process` (main
+thread) computes `sdf_collision_enabled && !gate_capture_mode` and packs it
+into `params[9]`, passed BY VALUE to the render thread (`_rt_sim_tick`),
+which uses that single flag for BOTH `bUpdateCollMesh` and
+`bSDFCollisionResponse` in `Simulation::StartSimulation` — no reason to skin
+the collision mesh or rebuild its SDF grid if nothing will consume it that
+frame. With the property off (the default), none of the four kernels above
+dispatch at all.

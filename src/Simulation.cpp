@@ -4,6 +4,7 @@
 #include "TressFX/TressFXHairObject.h"
 #include "TressFX/TressFXSettings.h"
 #include "HairStrands.h"
+#include "SDF.h"
 
 #include <atomic>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -45,6 +46,28 @@ void Simulation::Initialize() {
     }
 
     m_tressFXSimulation->Initialize(pDevice);
+
+    // A3.2 subtask 4: pin the SDF collision layouts' descriptor-set indices
+    // HERE, before any hair or collision-mesh object exists. Our Godot
+    // EI_Device::CreateBindSet() defaults an unset EI_BindLayout's set_index
+    // to 0 the first time ANY bind set is created from it -- and
+    // TressFXHairObject::CreateGPUResources() (run for EVERY hair object,
+    // unconditionally, regardless of sdf_collision_enabled) creates an
+    // ApplySDFLayout bind set long before CollisionMesh::EnsureCollidePSOCreated()
+    // (SDF.cpp) ever runs. Without this, ApplySDFLayout would already be stuck
+    // at set_index 0 by the time the collide-hair PSO is created (set 0 =
+    // GenerateSDFLayout, set 1 = ApplySDFLayout, matching the HLSL file's own
+    // "bindsets: 0 -> GenerateSDFLayout, 1 -> ApplySDFLayout" comment) --
+    // silently colliding both descriptor sets at index 0. This runs once
+    // (idempotent) before Initialize()'s caller creates any hair/collision
+    // objects, so every later CreateBindSet() call for either layout observes
+    // the correct, already-assigned index.
+    if (EI_BindLayout* generateSdfLayout = GetGenerateSDFLayout()) {
+        generateSdfLayout->set_index = 0;
+    }
+    if (EI_BindLayout* applySdfLayout = GetApplySDFLayout()) {
+        applySdfLayout->set_index = 1;
+    }
 }
 
 void Simulation::StartSimulation(
@@ -54,8 +77,6 @@ void Simulation::StartSimulation(
     bool bSDFCollisionResponse,
     bool bAsync) {
     // Treat fTime as timestep seconds (passed from Godot's _process(delta)).
-    (void)bUpdateCollMesh;
-    (void)bSDFCollisionResponse;
     (void)bAsync;
 
     EI_Device* device = GetDevice();
@@ -109,6 +130,7 @@ void Simulation::StartSimulation(
     settings.m_damping                    = ctx.damping;
     settings.m_gravityMagnitude           = ctx.gravityMagnitude;
     settings.m_tipSeparation              = ctx.tipSeparation;
+    settings.m_clampPositionDelta         = ctx.clampPositionDelta;
     {
         const godot::Vector3 w = ctx.wind_velocity;
         const float mag = (float)w.length();
@@ -143,8 +165,50 @@ void Simulation::StartSimulation(
         h->TransitionRenderingToSim(commandContext);
     }
 
+    // A3.2 subtask 2: skin the collision mesh(es) to the current bone pose
+    // BEFORE the hair kernels run. Subtask 3 adds the SDF grid build right
+    // after (UpdateSkinning() already leaves a UAV barrier behind it, so
+    // ConstructSignedDistanceField reads the freshly skinned vertices).
+    // bSDFCollisionResponse stays false this subtask -- nothing on the hair
+    // side consumes the grid yet; this only keeps it up to date for
+    // verification/subtask 4.
+    if (bUpdateCollMesh) {
+        for (size_t i = 0; i < ctx.collisionMeshes.size(); ++i) {
+            CollisionMesh* c = ctx.collisionMeshes[i];
+            if (!c || !c->IsValid()) {
+                continue;
+            }
+            if (i < ctx.collision_bone_matrices.size() && ctx.collision_bone_matrices[i].size() > 0) {
+                c->UpdateSkinning(commandContext, ctx.collision_bone_matrices[i]);
+                c->UpdateSDF(commandContext, ctx.collision_bone_matrices[i]);
+            }
+        }
+    }
+
     // Run the simulation kernels.
     m_tressFXSimulation->Simulate(commandContext, hairObjects);
+
+    // A3.2 subtask 4: SDF collision response, run AFTER the full Simulate()
+    // (all six audited kernels, including UpdateFollowHairVertices) has
+    // finished -- mirrors AMD's own data-flow contract documented in
+    // thirdparty/tressfx/src/TressFX/TressFXHairObject.cpp ("Simulate updates
+    // mPositions and mPositionsPrev (UAVs)... SDF updates mPositions and
+    // mPositionsPrev (UAVs)... Render with mPositions..."): collide is the
+    // last UAV writer before the sim->render transition below. It dispatches
+    // over hairObject.GetNumTotalHairVertices() (guides AND follow hairs), so
+    // follow-hair vertices already reflect this tick's UpdateFollowHairVertices
+    // output -- no one-pass lag. Every hair object collides against every
+    // collision mesh (we have 1x1 in practice).
+    if (bSDFCollisionResponse) {
+        for (CollisionMesh* c : ctx.collisionMeshes) {
+            if (!c || !c->IsValid()) {
+                continue;
+            }
+            for (TressFXHairObject* ho : hairObjects) {
+                c->CollideWithHair(commandContext, ho);
+            }
+        }
+    }
 
     // Transition back so other consumers can read positions as SRV (future rendering).
     for (HairStrands* h : ctx.hairStrands) {
