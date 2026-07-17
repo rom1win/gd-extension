@@ -125,6 +125,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_clamp_position_delta"), &TressFXCharacter::get_clamp_position_delta);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "clamp_position_delta", PROPERTY_HINT_RANGE, "0.001,20.0,0.001"), "set_clamp_position_delta", "get_clamp_position_delta");
 
+    ClassDB::bind_method(D_METHOD("set_sdf_collision_enabled", "enabled"), &TressFXCharacter::set_sdf_collision_enabled);
+    ClassDB::bind_method(D_METHOD("get_sdf_collision_enabled"), &TressFXCharacter::get_sdf_collision_enabled);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sdf_collision_enabled"), "set_sdf_collision_enabled", "get_sdf_collision_enabled");
+
     ClassDB::bind_method(D_METHOD("set_hair_fiber_radius", "v"), &TressFXCharacter::set_hair_fiber_radius);
     ClassDB::bind_method(D_METHOD("get_hair_fiber_radius"), &TressFXCharacter::get_hair_fiber_radius);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "hair_fiber_radius", PROPERTY_HINT_RANGE, "0.0001,0.02,0.0001"), "set_hair_fiber_radius", "get_hair_fiber_radius");
@@ -270,7 +274,7 @@ void TressFXCharacter::_process(double delta) {
 
         const Vector3 wind = m_gate_capture_mode ? Vector3() : m_wind_velocity;
         PackedFloat32Array params;
-        params.resize(9);
+        params.resize(10);
         params[0] = (float)wind.x;
         params[1] = (float)wind.y;
         params[2] = (float)wind.z;
@@ -280,6 +284,11 @@ void TressFXCharacter::_process(double delta) {
         params[6] = m_global_range;
         params[7] = m_local_stiffness;
         params[8] = m_clamp_position_delta;
+        // A3.2 subtask 4: gate capture must never run SDF passes -- the
+        // regression baseline predates SDF collision. Computed here (main
+        // thread) and passed by value so _rt_sim_tick never reads node
+        // properties directly on the render thread.
+        params[9] = (m_sdf_collision_enabled && !m_gate_capture_mode) ? 1.0f : 0.0f;
 
         const double dt = (m_gate_capture_mode || m_debug_force_fixed_dt) ? (1.0 / 60.0) : delta;
 
@@ -425,6 +434,10 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
     if (params.size() >= 9) {
         ctx.clampPositionDelta        = params[8];
     }
+    bool sdfCollisionActive = false;
+    if (params.size() >= 10) {
+        sdfCollisionActive = params[9] != 0.0f;
+    }
 
     // A3.1 watchdog, input side: are the bone matrices we are about to feed
     // the kernels already poisoned? (Tiny scan: <= bones x 16 floats per hair.)
@@ -445,10 +458,12 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         }
     }
 
-    // TEMPORARY (A3.2 subtask 2 verification only): bUpdateCollMesh is
-    // unconditionally true so the skin check below has something to read.
-    // Subtask 4 gates this behind a `sdf_collision_enabled` property.
-    sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/true, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
+    // A3.2 subtask 4: both flags follow sdf_collision_enabled (see params[9]
+    // above) -- skinning/SDF build only run when collision response will
+    // actually consume them. With the property off, the SKIN CHECK / SDF
+    // CHECK one-shots below simply never fire (they were subtask 2/3
+    // verification hooks; still functional when the property is on).
+    sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/sdfCollisionActive, /*bSDFCollisionResponse=*/sdfCollisionActive, /*bAsync=*/false);
 
     // A3.2 subtask 2 one-shot verification: self-checks the kernel against a
     // CPU reference computed from the SAME bone-matrix snapshot bytes used
@@ -1028,6 +1043,9 @@ float TressFXCharacter::get_local_stiffness() const { return m_local_stiffness; 
 
 void TressFXCharacter::set_clamp_position_delta(float v) { m_clamp_position_delta = v; }
 float TressFXCharacter::get_clamp_position_delta() const { return m_clamp_position_delta; }
+
+void TressFXCharacter::set_sdf_collision_enabled(bool enabled) { m_sdf_collision_enabled = enabled; }
+bool TressFXCharacter::get_sdf_collision_enabled() const { return m_sdf_collision_enabled; }
 
 void TressFXCharacter::set_hair_fiber_radius(float v) {
     m_hair_fiber_radius = v;

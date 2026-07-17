@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cfuaquoggtwew"
+path="res://.godot/imported/TressFXSDFCollision.CollideHairVerticesWithSdf_forward.comp.glsl-8b272fa3020e5130337e00f31e66a95c.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXSDFCollision.CollideHairVerticesWithSdf_forward.comp.glsl"
+dest_files=["res://.godot/imported/TressFXSDFCollision.CollideHairVerticesWithSdf_forward.comp.glsl-8b272fa3020e5130337e00f31e66a95c.res"]
+
+[params]
+

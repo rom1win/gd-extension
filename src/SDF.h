@@ -15,6 +15,7 @@ class EI_Resource;
 class EI_PSO;
 class EI_BindSet;
 class EI_CommandContext;
+class TressFXHairObject;
 
 // Godot-side adapter for the sample "CollisionMesh" glue type.
 // A3.2 subtask 1: CPU parsing of the AMD .tfxmesh text format (see
@@ -91,6 +92,21 @@ public:
     int GetSDFNumCellsZ() const { return m_numCellsZ; }
     float GetSDFCellSize() const { return m_cellSize; }
 
+    // A3.2 subtask 4: SDF-vs-hair collision response. Faithful port of
+    // thirdparty/tressfx/src/Shaders/TressFXSDFCollision.hlsl entry point
+    // `CollideHairVerticesWithSdf_forward` (~532) -- the ONE AMD's own sample
+    // dispatches (see TressFXSDFCollision.cpp CollideWithHair() /
+    // TressFXSDFCollision.h's Initialize(), which compiles that exact entry
+    // point despite the misleadingly-named PSO variable). RENDER thread only;
+    // requires UpdateSDF() to have already run THIS tick for this mesh (reuses
+    // the grid origin/cellSize/dims it just computed -- no extra barrier is
+    // needed beyond what UpdateSDF already leaves behind, since this only
+    // READS the finalized grid). Writes directly into `hair`'s
+    // Positions/PositionsPrev buffers (its ApplySDF bind set, created
+    // automatically by the vendored TressFXHairObject::CreateGPUResources) --
+    // physics-affecting, only ever called when sdf_collision_enabled is on.
+    void CollideWithHair(EI_CommandContext& commandContext, TressFXHairObject* hair);
+
     // CPU-only: rest-pose position for vertex i (bounds-checked). Used by the
     // one-shot skin-check readback to print a rest/skinned comparison.
     godot::Vector3 GetRestPosition(int i) const;
@@ -118,6 +134,11 @@ private:
     // Requires EnsureGPUResourcesCreated() to already have run. Safe to call
     // repeatedly.
     bool EnsureSDFPSOCreated();
+
+    // RENDER thread: creates m_collidePSO on first call (requires
+    // EnsureSDFPSOCreated() to have already run: reuses m_sdfBindSet as set 0
+    // and adds the vendored ApplySDFLayout as set 1). Safe to call repeatedly.
+    bool EnsureCollidePSOCreated();
 
     // Matches thirdparty/tressfx/src/TressFX/TressFXConstantBuffers.h's
     // TressFXSDFCollisionParams / TressFXSDFCollision.hlsl's ConstBuffer_SDF
@@ -213,4 +234,16 @@ private:
     std::unique_ptr<EI_PSO> m_initSdfPSO;
     std::unique_ptr<EI_PSO> m_constructSdfPSO;
     std::unique_ptr<EI_PSO> m_finalizeSdfPSO;
+
+    // Grid origin computed by THIS tick's UpdateSDF() call, reused verbatim by
+    // CollideWithHair() (same tick, same bone snapshot -- see UpdateSDF's own
+    // comment on why origin is the only per-frame-varying grid field).
+    godot::Vector3 m_lastGridOrigin;
+
+    // Collide-hair kernel (A3.2 subtask 4, created lazily by
+    // EnsureCollidePSOCreated, render thread only). Reuses m_sdfParamsUBO/
+    // m_sdfBindSet (set 0); set 1 is a per-hair-object ApplySDF bind set owned
+    // by the TressFXHairObject itself (GetDynamicState().GetApplySDFBindSet()).
+    bool m_collidePSOCreated = false;
+    std::unique_ptr<EI_PSO> m_collidePSO;
 };

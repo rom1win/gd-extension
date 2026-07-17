@@ -289,3 +289,121 @@ until subtask 4 wires the real `sdf_collision_enabled` property). Nothing
 consumes the built grid yet — `g_SignedDistanceField` is written and decoded
 back to plain floats, but no hair-side kernel reads it until subtask 4's
 `CollideHairVerticesWithSdf`.
+
+### S3 — `TressFXSDFCollision.CollideHairVerticesWithSdf_forward` — ported
+
+Ported from `thirdparty/tressfx/src/Shaders/TressFXSDFCollision.hlsl`, entry
+point `CollideHairVerticesWithSdf_forward` (~532), plus the trilinear-sampling
+helpers it calls: `GetSignedDistance` (~472, reusing `GetSdfCoordinates`/
+`GetSdfCellPosition`/`GetSdfCellIndex` from S2) and `LinearInterpolate`/
+`BilinearInterpolate`/`TrilinearInterpolate` (~414–469), to
+`demo/shaders/glsl/TressFXSDFCollision.CollideHairVerticesWithSdf_forward.comp.glsl`.
+One thread per hair vertex.
+
+**Which entry point AMD actually dispatches, and why only that one is
+ported.** The HLSL file defines TWO collide entry points:
+`CollideHairVerticesWithSdf_forward` (~532, forward-difference-only gradient,
+4 trilinear lookups) and `CollideHairVerticesWithSdf` (~600, mixes forward and
+backward differences to always stay within one cell — "much faster... but it
+could also be less stable", AMD's own comment). `TressFXSDFCollisionSystem::
+Initialize()` (`thirdparty/tressfx/src/TressFX/TressFXSDFCollision.h` line 49)
+compiles `m_CollideHairVerticesWithSdfPSO` from the string literal
+`"CollideHairVerticesWithSdf_forward"` — despite the PSO member's name
+matching the *other* entry point, it is the `_forward` variant that
+`TressFXSDFCollision::CollideWithHair()` (`TressFXSDFCollision.cpp` ~205)
+actually binds and dispatches. That is the one ported here; the mixed-
+difference `CollideHairVerticesWithSdf` is unused by AMD's own sample and not
+ported (noted for completeness only).
+
+**Where this pass runs relative to the six sim kernels.** No vendored sample
+main-loop calls `CollideWithHair()` (`TressFXSDFCollision.{h,cpp}` is a
+standalone class; nothing in this repo's vendored tree shows its call site),
+so the ordering was derived from `TressFXHairObject.cpp`'s own data-flow
+comment (lines 503–509), which is explicit and unambiguous: *"Simulate
+updates mPositions and mPositionsPrev (UAVs)... **SDF updates mPositions and
+mPositionsPrev (UAVs)**... Render with mPositions and mTangents (PS SRVs)."*
+Collide runs strictly AFTER the full `Simulate()` call (all six audited
+kernels, `UpdateFollowHairVertices` last) and BEFORE the sim→render UAV→SRV
+transition. `Simulation::StartSimulation` (`src/Simulation.cpp`) places it
+exactly there: right after `m_tressFXSimulation->Simulate(...)`, before the
+`TransitionSimToRendering` loop. Because `CollideHairVerticesWithSdf_forward`
+dispatches over `hairObject.GetNumTotalHairVertices()` — guide AND follow
+vertices both live in the same interleaved position buffer — follow hairs do
+**not** lag a pass: this tick's `UpdateFollowHairVertices` output is already
+in the buffer this collide dispatch reads and writes.
+
+**Root-vertex skip, trilinear sampling, gradient/projection — copied
+statement-for-statement** (mechanical HLSL→GLSL only): `hairVertexLocalIndex
+== 0 || == 1` returns immediately (roots are pinned to the skin mesh, never
+collided); `GetSignedDistance` fetches the 8 corner cells of the containing
+grid cube via `uintBitsToFloat` (S2's `FinalizeSignedDistanceField` already
+undid the `FloatFlip3` encoding, so no bit-rotation is needed here, just a
+bit-cast) and returns `INITIAL_DISTANCE` (1e10) if the query point is outside
+the grid OR if any corner was never written by a triangle; the early-out
+`dist > g_CollisionMargin` skips the (up to) 4x extra `GetSignedDistance`
+calls for the gradient on vertices nowhere near the surface; the gradient
+uses 3 forward-difference taps at `h = 0.1 * g_CellSize`; the vertex is
+projected out along `normalize(sdfGradient)` by `g_CollisionMargin - dist`
+and written into BOTH `g_HairVertices` and `g_PrevHairVertices` (zeroing the
+one-step velocity the six sim kernels would otherwise compute from the
+position delta, exactly as AMD's HLSL does).
+
+**Bindings — new second bind set.** Set 0 reuses S2's `GenerateSDFLayout`
+(`src/SDF.cpp`'s shared `m_sdfBindSet`; bindings 0/2 declared but unused by
+this entry point, same descriptor-set-interface-consistency rationale as the
+three S2 files). Set 1 is `CreateApplySDFLayout()` (`TressFXLayouts.cpp`,
+vendored, previously uncompiled-against — `g_HairVertices`/
+`g_PrevHairVertices`, both `RW`), bound once per hair object via the
+per-object `EI_BindSet` `TressFXHairObject::CreateGPUResources` already
+builds automatically over that object's own Positions/PositionsPrev buffers
+(`TressFXDynamicState::GetApplySDFBindSet()`) — these are the SAME buffers
+the six sim kernels read/write, so writes here are visible to next tick's sim
+pass and to rendering with no extra plumbing. `src/SDF.cpp`'s
+`CollisionMesh::EnsureCollidePSOCreated()` creates the PSO with
+`layouts[] = { GetGenerateSDFLayout(), GetApplySDFLayout() }` (2 layouts,
+assigning `ApplySDFLayout` set_index 1 the first time any PSO uses it —
+matches the HLSL file's own binding comment, `// bindsets: 0 ->
+GenerateSDFLayout, 1 -> ApplySDFLayout`).
+
+**Per-hair-object constant-buffer re-upload.** AMD's own `CollideWithHair()`
+(`TressFXSDFCollision.cpp` ~186–198) re-populates the SAME constant buffer
+`Update()` (the grid-build pass) just wrote, adding the hair-specific fields
+(`m_CollisionMargin * m_CellSize`, `NumHairVerticesPerStrand`,
+`NumTotalHairVertices`) — because those fields differ per hair object while
+grid origin/cellSize/dims don't change within the tick. `CollisionMesh::
+CollideWithHair()` reproduces this: it reuses `m_cellSize`/`m_numCellsX/Y/Z`
+(computed once) and `m_lastGridOrigin` (the value `UpdateSDF()` computed
+THIS tick, cached in a member since the origin recentering math itself lives
+inside `UpdateSDF()`, not duplicated), then re-uploads `m_sdfParamsUBO` with
+those plus the hair-specific fields before each dispatch. Collision margin is
+scaled to world space exactly like AMD: `collisionMargin = m_SDFCollMargin *
+m_cellSize` (S2's `UpdateSDF()` had written this field unscaled — dead code
+until this subtask, since nothing read it before now; this subtask's write
+immediately supersedes it, same buffer, same tick, right before the collide
+dispatch reads it).
+
+**Wiring.** `Simulation::StartSimulation` nests `for (collisionMesh) for
+(hairObject) c->CollideWithHair(commandContext, ho);` under
+`bSDFCollisionResponse` (previously ignored via `(void)`, now consumed).
+`tressfx_character.cpp` adds `sdf_collision_enabled` (bool, default `false`,
+registered like `clamp_position_delta`) and replaces the subtask-2-era
+hardcoded `bUpdateCollMesh=true` at the `_rt_sim_tick` call site with
+`sdfCollisionActive = sdf_collision_enabled && !gate_capture_mode`, computed
+on the MAIN thread (`_process`, packed into `params[9]`) and passed by value
+to the render thread — never read as a live node property there, per the A1
+threading contract. Both `bUpdateCollMesh` and `bSDFCollisionResponse` use
+this same flag (no reason to skin/build the SDF grid if nothing will consume
+it). Gate capture forces it off unconditionally, so the regression baseline
+(which predates SDF collision) is unaffected regardless of the property's
+Inspector value.
+
+**Note for whoever runs the visual gate:** `demo/ratboy_node.tscn`'s
+`Collision_body` node currently has `collisionMargin` at its default, `0.0`
+(see S2's "Ratboy's grid" reference above) — meaning the collide pass only
+pushes vertices that are *already inside* the mesh back out to the exact
+surface (zero standoff). This is a legitimate, faithful default (AMD ships
+the same default), not a bug, but it means the visual effect may look like
+"stops penetration" rather than "keeps a visible gap" — raising
+`collisionMargin` (a cell-count-style factor, world-space margin =
+`collisionMargin * cellSize` ≈ `collisionMargin * 0.00992` m for Ratboy) is a
+scene-authoring tweak, not a code change, if a bigger standoff is wanted.

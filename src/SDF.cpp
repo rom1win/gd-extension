@@ -2,6 +2,7 @@
 
 #include "EngineInterface.h" // EI_Device, EI_Resource, EI_CommandContext, EI_BF_*, EI_Scene, GetDevice()
 #include "TressFXLayouts.h"  // GetBoneSkinningMeshLayout() (still-compiled vendored layout table)
+#include "TressFX/TressFXHairObject.h" // TressFXHairObject, TressFXDynamicState::GetApplySDFBindSet()
 
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
@@ -654,6 +655,7 @@ void CollisionMesh::UpdateSDF(EI_CommandContext& commandContext, const godot::Pa
     }
 
     const godot::Vector3 origin = recenteredMin - m_paddingBoundary;
+    m_lastGridOrigin = origin; // reused by CollideWithHair() this same tick
 
     SDFParamsUBOData ubo;
     ubo.origin[0] = origin.x;
@@ -698,4 +700,98 @@ void CollisionMesh::UpdateSDF(EI_CommandContext& commandContext, const godot::Pa
 
 godot::RID CollisionMesh::GetSDFGridRID() const {
     return m_sdfGridUAV ? m_sdfGridUAV->rid : godot::RID();
+}
+
+bool CollisionMesh::EnsureCollidePSOCreated() {
+    if (m_collidePSOCreated) {
+        return true;
+    }
+    if (!m_sdfPSOCreated) {
+        // The SDF grid PSO/bind set (and m_sdfParamsUBO/m_sdfBindSet this
+        // method reuses) are created by EnsureSDFPSOCreated, called from
+        // UpdateSDF(); nothing to collide against yet.
+        return false;
+    }
+
+    EI_Device* device = GetDevice();
+    if (!device) {
+        return false;
+    }
+    godot::RenderingDevice* rd = device->GetLocalRenderingDevice();
+    if (!rd) {
+        return false;
+    }
+
+    EI_BindLayout* generateSdfLayout = GetGenerateSDFLayout();
+    EI_BindLayout* applySdfLayout = GetApplySDFLayout();
+    if (!generateSdfLayout || !applySdfLayout) {
+        return false;
+    }
+
+    // AMD's own PSO variable name (`m_CollideHairVerticesWithSdfPSO`) is
+    // misleading: TressFXSDFCollision.h's Initialize() actually compiles it
+    // from entry point "CollideHairVerticesWithSdf_forward", not
+    // "CollideHairVerticesWithSdf" -- see audit note S3. Layout order matches
+    // the HLSL file's own binding comment ("bindsets: 0 -> GenerateSDFLayout,
+    // 1 -> ApplySDFLayout"): set 0 is the SAME generateSdfLayout m_sdfBindSet
+    // already uses (its set_index was fixed to 0 by EnsureSDFPSOCreated), so
+    // this call only assigns set_index 1 to applySdfLayout.
+    EI_BindLayout* layouts[] = { generateSdfLayout, applySdfLayout };
+    m_collidePSO = device->CreateComputeShaderPSO("TressFXSDFCollision", "CollideHairVerticesWithSdf_forward", layouts, 2);
+
+    m_collidePSOCreated = (m_collidePSO && m_collidePSO->pipeline.is_valid());
+    return m_collidePSOCreated;
+}
+
+void CollisionMesh::CollideWithHair(EI_CommandContext& commandContext, TressFXHairObject* hair) {
+    if (!hair) {
+        return;
+    }
+    if (!EnsureCollidePSOCreated()) {
+        return;
+    }
+
+    const int numTotalHairVertices = hair->GetNumTotalHairVertices();
+    const int numVerticesPerStrand = hair->GetNumVerticesPerStrand();
+    if (numTotalHairVertices <= 0 || numVerticesPerStrand <= 0) {
+        return;
+    }
+
+    // Re-populates the SAME constant buffer UpdateSDF() wrote this tick,
+    // exactly like AMD's own CollideWithHair() (TressFXSDFCollision.cpp
+    // ~186-198): grid origin/cellSize/dims are unchanged since UpdateSDF just
+    // ran (same bone snapshot, same tick), but collisionMargin needs scaling
+    // to world space (AMD: `m_ConstBuffer.m_CollisionMargin = m_CollisionMargin
+    // * m_CellSize`) and numHairVerticesPerStrand/numTotalHairVertices are
+    // per-hair-object, so this re-upload happens once per (mesh, hair) pair.
+    SDFParamsUBOData ubo;
+    ubo.origin[0] = m_lastGridOrigin.x;
+    ubo.origin[1] = m_lastGridOrigin.y;
+    ubo.origin[2] = m_lastGridOrigin.z;
+    ubo.origin[3] = 0.0f;
+    ubo.cellSize = m_cellSize;
+    ubo.numCellsX = m_numCellsX;
+    ubo.numCellsY = m_numCellsY;
+    ubo.numCellsZ = m_numCellsZ;
+    ubo.collisionMargin = m_SDFCollMargin * m_cellSize;
+    ubo.numHairVerticesPerStrand = numVerticesPerStrand;
+    ubo.numTotalHairVertices = numTotalHairVertices;
+
+    commandContext.UpdateBuffer(m_sdfParamsUBO.get(), &ubo);
+
+    commandContext.BindPSO(m_collidePSO.get());
+    EI_BindSet* bindSets[] = { m_sdfBindSet.get(), &hair->GetDynamicState().GetApplySDFBindSet() };
+    commandContext.BindSets(m_collidePSO.get(), 2, bindSets);
+
+    const int numGroups = (int)std::ceil((float)numTotalHairVertices / 64.0f);
+    commandContext.Dispatch(numGroups);
+
+    // Mirrors TressFXSDFCollision::CollideWithHair()'s trailing barriers: a
+    // UAV barrier on the hair position buffers this kernel just wrote (so the
+    // sim->render transition right after it, and the next tick's sim kernels,
+    // observe the collision response), plus one on the SDF grid (read-only
+    // here, but AMD's own code transitions it too for DX12 state tracking).
+    hair->GetDynamicState().UAVBarrier(commandContext);
+    EI_Barrier sdfBarrier[] = { { m_sdfGridUAV.get(), EI_STATE_UAV, EI_STATE_UAV } };
+    commandContext.SubmitBarrier(1, sdfBarrier);
 }

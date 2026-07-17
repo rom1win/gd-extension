@@ -97,6 +97,12 @@ public:
     void set_local_stiffness(float v);   float get_local_stiffness() const;
     void set_clamp_position_delta(float v); float get_clamp_position_delta() const;
 
+    // A3.2 subtask 4: gates the SDF-vs-hair collision response (writes hair
+    // position buffers -- physics-affecting). Off by default; forced off
+    // regardless of this property while gate_capture_mode is on (see
+    // _rt_sim_tick -- the regression baseline predates SDF collision).
+    void set_sdf_collision_enabled(bool enabled); bool get_sdf_collision_enabled() const;
+
     // A2.2: ribbon half-width in meters (TressFX FiberRadius convention).
     void set_hair_fiber_radius(float v); float get_hair_fiber_radius() const;
 
@@ -160,6 +166,9 @@ private:
     // Max vertex travel per sim step (meters) before the kernel clamps it.
     // 20 = AMD's default = effectively OFF at meter scale (see Simulation.h).
     float m_clamp_position_delta = 20.0f;
+
+    // A3.2 subtask 4: off by default (see set_sdf_collision_enabled comment).
+    bool m_sdf_collision_enabled = false;
 
     // Cached packed guide positions for optional legacy 2D overlay texture output.
     godot::PackedByteArray m_last_guide_positions_bytes;
