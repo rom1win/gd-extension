@@ -233,6 +233,10 @@ void TressFXCharacter::_process(double delta) {
         for (auto& h : m_hairStrands) {
             hair_ptrs.push_back((int64_t)(intptr_t)h.get());
         }
+        PackedInt64Array coll_ptrs;
+        for (auto& c : m_collisionMeshes) {
+            coll_ptrs.push_back((int64_t)(intptr_t)c.get());
+        }
 
         // Arm state BEFORE scheduling: with single-threaded rendering (Godot's
         // default), call_on_render_thread executes the callable INLINE, so
@@ -244,7 +248,7 @@ void TressFXCharacter::_process(double delta) {
 
         RenderingServer::get_singleton()->call_on_render_thread(
             callable_mp(this, &TressFXCharacter::_rt_initialize_gpu)
-                .bind((int64_t)(intptr_t)m_pSimulation.get(), hair_ptrs));
+                .bind((int64_t)(intptr_t)m_pSimulation.get(), hair_ptrs, coll_ptrs));
         if (m_gate_capture_mode) {
             UtilityFunctions::print("TressFXCharacter: GATE A1 capture mode — fixed dt=1/60, identity bones, wind off; dumps at sim steps 1/30/120");
         }
@@ -348,7 +352,7 @@ void TressFXCharacter::_process(double delta) {
     m_overlay_texture_requested = false;
 }
 
-void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Array& hair_ptrs) {
+void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Array& hair_ptrs, const PackedInt64Array& coll_ptrs) {
     // RENDER thread. Compile the kernel PSOs and create the GPU hair objects on
     // the main RenderingDevice.
     Simulation* sim = reinterpret_cast<Simulation*>((intptr_t)sim_ptr);
@@ -360,6 +364,13 @@ void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Arra
         HairStrands* h = reinterpret_cast<HairStrands*>((intptr_t)hair_ptrs[i]);
         if (h) {
             h->EnsureTressFXObjectCreated();
+        }
+    }
+    // A3.2 subtask 1: collision-mesh GPU buffers only (no dispatch/binding yet).
+    for (int64_t i = 0; i < coll_ptrs.size(); ++i) {
+        CollisionMesh* c = reinterpret_cast<CollisionMesh*>((intptr_t)coll_ptrs[i]);
+        if (c) {
+            c->EnsureGPUResourcesCreated();
         }
     }
     m_rt_gpu_ready.store(true);

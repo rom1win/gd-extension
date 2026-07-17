@@ -217,7 +217,7 @@ private:
     // via RenderingServer::call_on_render_thread and never run on the main
     // thread; they receive every input by value (plus raw pointers that stay
     // valid because teardown is queued behind them on the same thread).
-    void _rt_initialize_gpu(int64_t sim_ptr, const godot::PackedInt64Array& hair_ptrs);
+    void _rt_initialize_gpu(int64_t sim_ptr, const godot::PackedInt64Array& hair_ptrs, const godot::PackedInt64Array& coll_ptrs);
     void _rt_sim_tick(double dt, const godot::PackedFloat32Array& params,
         const godot::Array& bones_per_hair, const godot::PackedInt64Array& hair_ptrs,
         int64_t sim_ptr, int64_t gate_dump_frame);
