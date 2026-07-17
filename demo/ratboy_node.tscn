@@ -1135,6 +1135,7 @@ bones/105/position = Vector3(9.40916, -0.159764, -1.66656e-14)
 bones/105/rotation = Quaternion(0, 0, -0.0147434, 0.999891)
 bones/105/scale = Vector3(1, 1, 1)
 script = ExtResource("5_headshake")
+shaking = false
 
 [node name="Ratboy" type="MeshInstance3D" parent="CharacterBody3D/Skeleton3D"]
 mesh = SubResource("ArrayMesh_8jmkf")

@@ -117,6 +117,24 @@ and xyz-only writebacks match.
 
 ---
 
+### S3 amendment (2026-07-17, post-merge fix)
+
+The initial S3 port declared `g_SignedDistanceField` as `readonly` in the collide
+kernel — an unfaithful deviation (AMD binds it `RWStructuredBuffer u1` in this entry
+point too). Consequence was NOT a wrong result but a silently rejected dispatch:
+the shared bind set is created against the build shaders (grid writable), and
+Godot's RenderingDevice refuses a uniform set whose writability flags differ from
+the pipeline's declaration — `compute_list_dispatch: Uniforms supplied for set (0)
+... are not the same format as required` in the errors tab, collide pass skipped
+every frame. Fixed by removing `readonly` (one word, back to AMD's declaration).
+Verified after fix: error gone; with `collisionMargin = 5.0` (exaggerated-standoff
+test) the field boundary is visibly populated by deflected strands, on/off A/B
+unmistakable (margin restored to 0 after the test — large margins bury the anchored
+roots inside the forbidden zone and the projection fights the length constraints,
+producing high-frequency jitter; that is inherent to projection collision, not a bug).
+LESSON for future kernel ports: match AMD's buffer access qualifiers exactly —
+"tightening" them breaks bind-set format compatibility on Godot's RD.
+
 ## Cross-checks performed
 
 - **Bindings**: set 0 = {4 initial, 5 restLength, 6 strandType, 7 followRootOffset,

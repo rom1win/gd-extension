@@ -37,7 +37,7 @@ layout(set = 0, binding = 0, std430) readonly buffer InTrimeshVertexIndices {
 
 // FloatFlip-decoded back to plain IEEE-754 float bit patterns by
 // FinalizeSignedDistanceField; a straight bit-cast is all that's needed here.
-layout(set = 0, binding = 1, std430) readonly buffer InSignedDistanceField {
+layout(set = 0, binding = 1, std430) buffer InSignedDistanceField {
     uint g_SignedDistanceField[];
 };
 
