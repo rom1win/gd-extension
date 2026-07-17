@@ -226,8 +226,8 @@ heart; the C++ extension around them is the product.
 
 - **A2 — visible hair: DONE** (see "already done" above). Tag: `gate-a2`.
 
-- **A3 — animation + collision. IN PROGRESS (branch `a3-animation-collision`).**
-  Two independent halves; do them in this order.
+- **A3 — animation + collision: DONE, Gate A3 green (2026-07-17), tag `gate-a3`.**
+  Two independent halves, done in this order.
   - **A3.1 — animation. CORE FIXED (2026-07-16), maintainer-verified: 35°/2 Hz
     shake with roots glued, believable bending, no vanishing.** babylon.tscn
     has NO AnimationPlayer (the source glTF has one clip, "All Animations",
@@ -272,24 +272,38 @@ heart; the C++ extension around them is the product.
     only — capture mode runs fine, so the regression gate could not see it. Root
     cause never isolated (UBO growth vs. kernel loop). Do not merge those branches
     without solving that on Intel first.
-    SDF instead: separate compute passes, the six audited kernels stay UNTOUCHED.
-    Vendored code is complete (`TressFXSDFCollision.hlsl` entry points at lines
-    302/330/401/532/600, `TressFXBoneSkinning.hlsl` line 58, C++ classes, and
-    `Ratboy_body.tfxmesh` is already in the repo wired to the `Collision_body`
-    node). Four subtasks, each with a maintainer check and an F5-stays-alive test
-    (Intel device-lost vigilance — especially the atomics in the SDF build pass):
-    1. `.tfxmesh` loader in `src/SDF.cpp` CollisionMesh (CPU parse + GPU buffers,
-       no dispatch), 2. bone-skinning kernel port (collision mesh follows
-    skeleton), 3. SDF build kernels port (Init/Construct/Finalize, uint atomics),
-    4. collide-hair pass + `sdf_collision_enabled` on TressFXCharacter (default
-    false) wired through `StartSimulation`'s existing `bUpdateCollMesh` /
-    `bSDFCollisionResponse` params (src/Simulation.cpp ~50-58, call site
-    tressfx_character.cpp ~418). New kernels need audit notes referencing the
-    HLSL lines. Maintainer will separately author a PhysicalBone3D physical
-    skeleton (ragdoll validation; also future capsule-authoring source if
-    capsules ever return).
-  **Gate A3:** violent head-shake keeps roots glued and no visible scalp penetration
-  (maintainer's visual check); `compare_dump.py` still green with collision OFF.
+    **SDF DONE (2026-07-17, commits efc894c→a91cb20).** Four new kernels ported
+    (audit notes S1–S3 in `AUDIT_KERNELS.md`): `TressFXBoneSkinning.BoneSkinning`
+    (collision mesh skinned to skeleton, GPU/CPU cross-check verified),
+    `TressFXSDFCollision` Initialize/Construct/Finalize (grid build, uint
+    atomics + FloatFlip encoding), `CollideHairVerticesWithSdf_forward` (the
+    entry AMD actually dispatches — despite its PSO's name suggesting otherwise;
+    runs AFTER the full 6-kernel Simulate, before the render copy, covers guide
+    AND follow vertices). All separate passes — the six audited sim kernels
+    untouched, which is why the ENTIRE road incl. atomics runs clean on the
+    Intel machine that device-losts on the capsule kernel change. `.tfxmesh`
+    parser is ~100 isolated lines in `src/SDF.cpp` (everything downstream
+    consumes plain arrays — Phase B swaps in a from-Godot-mesh loader, nothing
+    else changes; the SDF input is the BODY mesh and has nothing to do with
+    hair file formats). `sdf_collision_enabled` on TressFXCharacter (C++
+    default false; demo scene ships it ON; forced off in gate capture — the
+    baseline predates SDF). `show_sdf_debug` on TressFXCollisionNode = voxel
+    ghost of the live grid (green surface → red core, ~1s async-readback
+    cadence; ships off; format-agnostic, will be the Phase B/C "visible
+    collision shapes" authoring aid). Grid tuned ON the voxel view:
+    `numCellsInXAxis=32` + `sdf_padding_cells=10` (new property; AMD hardcoded
+    40) → 199k cells @1.55 cm, was 2.8M @1 cm — 14× cheaper, maintainer-verified
+    coverage AND perf on the Intel iGPU. Also fixed during subtask 4: EI
+    backend descriptor set-index bug (GenerateSDF/ApplySDF layouts both
+    defaulted to set 0; now pinned 0/1 in `Simulation::Initialize`). One-shot
+    runtime checks kept as tripwires: `SKIN CHECK` (GPU vs CPU skinning),
+    `SDF CHECK` (grid stats) — they print only when SDF is enabled.
+    Maintainer will separately author a PhysicalBone3D physical skeleton
+    (ragdoll validation; also future capsule-authoring source if capsules
+    ever return).
+  **Gate A3: PASSED 2026-07-17.** Violent head-shake, roots glued, fur visibly kept
+  out of the body (maintainer visual check, SDF on); `compare_dump.py` green with
+  collision off (run at subtask 4; capture mode forces all four SDF kernels off).
 - **B — Blender pipeline.** Editor-only C++ importer: parse Alembic hair curves →
   resample to fixed vertices-per-strand (8/16/32/64) → root-bind to the glTF body mesh
   (nearest scalp triangle, barycentric bone weights) → cook rest lengths, follow
@@ -311,6 +325,11 @@ heart; the C++ extension around them is the product.
 
 ## Follow-ups (non-blocking; pick up between milestones or when asked)
 
+- **FPS baseline logging (maintainer request, 2026-07-17).** Add an average-FPS
+  print/log to the demo (e.g. during gate captures or a fixed 10 s window) so
+  future gates have a recorded perf reference instead of "feels better".
+  Historical context: A2's 60 fps check was waived on the RX 7900 XTX; the SDF
+  tuning (2.8M→199k cells) was judged by feel on the Intel iGPU.
 - **Nondeterminism hunt.** Find WHY the solver isn't bit-reproducible run-to-run
   (candidates: threadgroup shared-memory scheduling in the strand-level kernels;
   first-frame reads of not-yet-written prev/prevPrev position buffers). If it turns
