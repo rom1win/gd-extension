@@ -400,14 +400,24 @@ heart; the C++ extension around them is the product.
     tuning (`specular_strength_primary/secondary` in `hair_ribbon.gdshader`),
     not an architecture problem. Note `SlimeLight` in the scene is a green
     omni at `light_energy = 9.0` — will bloom any specular it touches.
-  - **Self-shadowing — unverified, not confirmed broken.** The ribbon casts
-    and receives shadows by Godot's defaults (`ATTENUATION` in `light()`
-    already includes the shadow term), so coarse hair-on-hair and body-on-hair
-    shadowing should function, but nobody has visually confirmed it, and fine
-    strand-level self-shadow is inherently limited by shadow-map resolution —
-    real fine-grained self-shadow needs a dedicated technique (this is the
-    "fake multiple scattering" / contact-shadow items already in the backlog
-    above, not a new item).
+  - **Shadow verification — DONE (2026-07-18, static-light session).**
+    Body-on-hair cast shadow VERIFIED WORKING: spotlight throws a crisp,
+    correct shadow line onto the fur ("perfect" per maintainer); the ribbon
+    material receives shadows correctly (`ATTENUATION` applied to diffuse and
+    both spec lobes — checked in `hair_ribbon.gdshader` light()). The omni
+    light initially did NOT shadow the hair — root cause was the LIGHT NODE
+    ITSELF: `pointLight1` carried a mirrored basis (uniform NEGATIVE scale
+    −0.092, a Maya/Babylon export leftover) which breaks omni shadow-map
+    rendering while leaving illumination looking normal. Fixed by resetting
+    the basis to identity. LESSON: imported lights must have clean transforms;
+    a negatively-scaled light half-works, and only hair exposes it (body
+    backsides go dark from facing alone, so they can't reveal a dead shadow
+    map — strands have no facing and depend entirely on the shadow term).
+    Remaining gap, unchanged: fine hair-on-hair self-shadow (strands too thin
+    for shadow maps → interior roots stay lit from any unshadowed direction) —
+    that is the existing "fake multiple scattering / depth darkening" backlog
+    item, now with maintainer-observed evidence (lit back-roots under a front
+    light) even on dark fur.
   - **Maintainer's long-term vision (stated 2026-07-16): stylized ribbons and
     feathers, authored in Blender, mixed on one character (e.g. a harpy with
     realistic hair + feathers, a chimera with fur + feathers), still riding

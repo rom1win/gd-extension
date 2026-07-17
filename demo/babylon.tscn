@@ -557,7 +557,7 @@ spot_angle = 24.3989
 spot_angle_attenuation = 0.1
 
 [node name="pointLight1" type="OmniLight3D" parent="."]
-transform = Transform3D(-0.0921246, -8.05379e-09, 0, 8.05379e-09, -0.0921246, 0, 0, 0, -0.0921246, 0, 0.807732, 2)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.807732, 2)
 light_energy = 2.0
 shadow_enabled = true
 omni_range = 10.0

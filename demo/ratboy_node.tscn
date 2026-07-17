@@ -1138,6 +1138,7 @@ script = ExtResource("5_headshake")
 shaking = false
 
 [node name="Ratboy" type="MeshInstance3D" parent="CharacterBody3D/Skeleton3D"]
+gi_mode = 2
 mesh = SubResource("ArrayMesh_8jmkf")
 skin = SubResource("Skin_qseu4")
 
@@ -1152,6 +1153,7 @@ sdf_collision_enabled = true
 tfx_mesh_file = "res://Meshes/HairAsset/Ratboy/Ratboy_body.tfxmesh"
 skeleton_node_path = NodePath("../../CharacterBody3D/Skeleton3D")
 numCellsInXAxis = 32
+collisionMargin = 0.1
 sdf_padding_cells = 10
 followBone = "frenchHornMonster_root_JNT"
 
