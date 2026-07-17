@@ -27,6 +27,10 @@ struct SimulationContext {
     // keep the previously applied matrices.
     std::vector<godot::PackedByteArray> bone_matrices;
 
+    // Same convention as bone_matrices, parallel to collisionMeshes (index i
+    // is the snapshot for collisionMeshes[i]'s own EI_Scene/skeleton).
+    std::vector<godot::PackedByteArray> collision_bone_matrices;
+
     // Wind in world space (direction * magnitude). Default zero = no wind.
     godot::Vector3 wind_velocity = godot::Vector3(0, 0, 0);
 

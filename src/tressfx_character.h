@@ -220,10 +220,20 @@ private:
     void _rt_initialize_gpu(int64_t sim_ptr, const godot::PackedInt64Array& hair_ptrs, const godot::PackedInt64Array& coll_ptrs);
     void _rt_sim_tick(double dt, const godot::PackedFloat32Array& params,
         const godot::Array& bones_per_hair, const godot::PackedInt64Array& hair_ptrs,
+        const godot::Array& bones_per_coll, const godot::PackedInt64Array& coll_ptrs,
         int64_t sim_ptr, int64_t gate_dump_frame);
     // Async-readback callbacks (fire on the render thread; only stash data).
     void _on_positions_async(const godot::PackedByteArray& data);
     void _on_gate_dump_async(const godot::PackedByteArray& data, int64_t frame);
+    // A3.2 subtask 2 one-shot verification (fires once, ~sim tick 30): prints
+    // rest/gpu/cpu position for two collision-mesh vertices. gpu is the async
+    // readback of the kernel's output; cpu is CollisionMesh::CpuSkinVertex()
+    // run on the SAME bone-matrix snapshot bytes used for the GPU dispatch
+    // that tick -- this is a self-check (kernel vs. reference math), not a
+    // "did the skeleton move" check, so gpu/cpu agreement is the pass bar,
+    // not distance from rest.
+    void _on_coll_skin_check_async(const godot::PackedByteArray& data, godot::Vector3 rest_a, godot::Vector3 rest_b,
+        int64_t vertex_b, godot::Vector3 cpu_a, godot::Vector3 cpu_b);
     // Frees GPU-owned objects on the render thread (payload allocated by
     // teardown_gpu_runtime).
     static void _rt_destroy_gpu_payload(int64_t payload_ptr);
@@ -245,6 +255,9 @@ private:
     std::atomic<bool> m_watchdog_fired{false};
     std::atomic<bool> m_watchdog_bones_reported{false};
     std::atomic<int64_t> m_rt_tick_count{0};
+    // A3.2 subtask 2 one-shot skin-check readback (render thread only; no
+    // atomics needed since _rt_sim_tick always runs on that same thread).
+    bool m_coll_skin_check_done = false;
     uint64_t m_sim_steps = 0;
 
     // Dump metadata cached on the main thread before GPU init so the gate-dump

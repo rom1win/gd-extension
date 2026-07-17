@@ -4,6 +4,7 @@
 #include "TressFX/TressFXHairObject.h"
 #include "TressFX/TressFXSettings.h"
 #include "HairStrands.h"
+#include "SDF.h"
 
 #include <atomic>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -54,7 +55,6 @@ void Simulation::StartSimulation(
     bool bSDFCollisionResponse,
     bool bAsync) {
     // Treat fTime as timestep seconds (passed from Godot's _process(delta)).
-    (void)bUpdateCollMesh;
     (void)bSDFCollisionResponse;
     (void)bAsync;
 
@@ -142,6 +142,22 @@ void Simulation::StartSimulation(
         }
         h->GetTressFXHandle()->UpdateSimulationParameters(&settings, timeStep);
         h->TransitionRenderingToSim(commandContext);
+    }
+
+    // A3.2 subtask 2: skin the collision mesh(es) to the current bone pose
+    // BEFORE the hair kernels run (bSDFCollisionResponse stays false this
+    // subtask -- nothing consumes the skinned buffer on the hair side yet;
+    // this only keeps it up to date for verification/subtask 3+).
+    if (bUpdateCollMesh) {
+        for (size_t i = 0; i < ctx.collisionMeshes.size(); ++i) {
+            CollisionMesh* c = ctx.collisionMeshes[i];
+            if (!c || !c->IsValid()) {
+                continue;
+            }
+            if (i < ctx.collision_bone_matrices.size() && ctx.collision_bone_matrices[i].size() > 0) {
+                c->UpdateSkinning(commandContext, ctx.collision_bone_matrices[i]);
+            }
+        }
     }
 
     // Run the simulation kernels.

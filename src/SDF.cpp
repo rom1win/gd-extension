@@ -1,6 +1,7 @@
 #include "SDF.h"
 
 #include "EngineInterface.h" // EI_Device, EI_Resource, EI_CommandContext, EI_BF_*, EI_Scene, GetDevice()
+#include "TressFXLayouts.h"  // GetBoneSkinningMeshLayout() (still-compiled vendored layout table)
 
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
@@ -8,6 +9,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -95,6 +97,16 @@ bool read_line(FILE* fp, std::string& out) {
     }
     return any;
 }
+
+// Matches ConstBufferCS_BoneMatrix in
+// demo/shaders/glsl/TressFXBoneSkinning.BoneSkinning.comp.glsl byte-for-byte
+// (std140: ivec4 then a tightly-packed mat4 array, no padding needed since
+// both are already 16-byte aligned).
+constexpr int kMaxSkinningBones = 128; // see the kernel file's AMD_TRESSFX_MAX_NUM_BONES comment
+struct BoneMatrixUBOData {
+    int32_t numMeshVertices[4] = { 0, 0, 0, 0 };
+    float boneMatrix[kMaxSkinningBones][16] = {};
+};
 
 int tokenize(const std::string& line, std::vector<std::string>& tokens) {
     tokens.clear();
@@ -344,8 +356,8 @@ bool CollisionMesh::EnsureGPUResourcesCreated() {
     m_boneSkinningDataSRV = device->CreateBufferResource((int)sizeof(VertexBoneData), m_numVertices, 0, "CollisionMeshBoneSkinningData");
     ctx.UpdateBuffer(m_boneSkinningDataSRV.get(), m_boneData.data());
 
-    // UAV-capable skinned-output buffer; seeded with the rest pose (no
-    // skinning kernel writes it yet -- deliberately inert this subtask).
+    // UAV-capable skinned-output buffer; seeded with the rest pose. Written
+    // per-frame by UpdateSkinning() once EnsureSkinningPSOCreated() has run.
     m_skinnedPositionsUAV = device->CreateBufferResource((int)kVertexBlockSize, m_numVertices, EI_BF_NEEDSUAV, "CollisionMeshSkinnedPositions");
     ctx.UpdateBuffer(m_skinnedPositionsUAV.get(), vertexBlock.data());
 
@@ -360,4 +372,152 @@ bool CollisionMesh::EnsureGPUResourcesCreated() {
 
     m_gpuResourcesCreated = true;
     return true;
+}
+
+godot::PackedByteArray CollisionMesh::SnapshotBoneMatrices() const {
+    // MAIN thread only (reads the Skeleton3D through EI_Scene). Mirrors
+    // HairStrands::SnapshotBoneMatrices exactly: both consume the same
+    // per-skeleton-bone-index matrix array, so the same convention holds
+    // (per-vertex boneIndex values already ARE skeleton bone indices --
+    // LoadTfxMesh() resolved them at parse time via GetBoneIdByName).
+    godot::PackedByteArray out;
+    if (!m_pScene) {
+        return out;
+    }
+    const std::vector<XMMATRIX>& mats = m_pScene->GetWorldSpaceSkeletonMats(m_skinNumber);
+    if (mats.empty()) {
+        return out;
+    }
+    out.resize((int64_t)mats.size() * (int64_t)sizeof(XMMATRIX));
+    std::memcpy(out.ptrw(), mats.data(), (size_t)out.size());
+    return out;
+}
+
+bool CollisionMesh::EnsureSkinningPSOCreated() {
+    if (m_skinningPSOCreated) {
+        return true;
+    }
+    if (!m_valid || !m_gpuResourcesCreated) {
+        return false;
+    }
+
+    EI_Device* device = GetDevice();
+    if (!device) {
+        return false;
+    }
+    godot::RenderingDevice* rd = device->GetLocalRenderingDevice();
+    if (!rd) {
+        return false;
+    }
+
+    EI_BindLayout* boneSkinningLayout = GetBoneSkinningMeshLayout();
+    if (!boneSkinningLayout) {
+        // Global TressFX layouts not initialized yet (Simulation::Initialize()
+        // creates them); try again next call.
+        return false;
+    }
+
+    m_boneMatrixUBO = device->CreateBufferResource((int)sizeof(BoneMatrixUBOData), 1, EI_BF_UNIFORMBUFFER, "CollisionMeshBoneMatrixUBO");
+
+    // Order MUST match CreateBoneSkinningLayout()'s resource list
+    // (TressFXLayouts.cpp): boneSkinningData, initialVertexPositions,
+    // collMeshVertexPositions (UAV), then the uniform buffer.
+    EI_BindSetDescription bindSetDesc;
+    bindSetDesc.resources = {
+        m_boneSkinningDataSRV.get(),
+        m_restPositionsNormalsSRV.get(),
+        m_skinnedPositionsUAV.get(),
+        m_boneMatrixUBO.get(),
+    };
+    m_boneSkinningBindSet = device->CreateBindSet(boneSkinningLayout, bindSetDesc);
+
+    EI_BindLayout* layouts[] = { boneSkinningLayout };
+    m_boneSkinningPSO = device->CreateComputeShaderPSO("TressFXBoneSkinning", "BoneSkinning", layouts, 1);
+
+    m_skinningPSOCreated = (m_boneSkinningPSO && m_boneSkinningPSO->pipeline.is_valid());
+    return m_skinningPSOCreated;
+}
+
+void CollisionMesh::UpdateSkinning(EI_CommandContext& commandContext, const godot::PackedByteArray& bone_matrices_snapshot) {
+    if (!EnsureSkinningPSOCreated()) {
+        return;
+    }
+    if (bone_matrices_snapshot.size() < (int64_t)sizeof(XMMATRIX)) {
+        return;
+    }
+
+    BoneMatrixUBOData ubo;
+    ubo.numMeshVertices[0] = m_numVertices;
+    const int available = (int)(bone_matrices_snapshot.size() / (int64_t)sizeof(XMMATRIX));
+    const int count = std::min(available, kMaxSkinningBones);
+    std::memcpy(ubo.boneMatrix, bone_matrices_snapshot.ptr(), (size_t)count * sizeof(float) * 16);
+
+    commandContext.UpdateBuffer(m_boneMatrixUBO.get(), &ubo);
+
+    commandContext.BindPSO(m_boneSkinningPSO.get());
+    EI_BindSet* bindSets[] = { m_boneSkinningBindSet.get() };
+    commandContext.BindSets(m_boneSkinningPSO.get(), 1, bindSets);
+
+    const int numGroups = (int)std::ceil((float)m_numVertices / 64.0f);
+    commandContext.Dispatch(numGroups);
+
+    // Mirrors TressFXBoneSkinning.cpp's Update(): a UAV->UAV barrier so any
+    // pass reading the skinned buffer this frame observes the write.
+    EI_Barrier flushSkinnedVerts[] = { { m_skinnedPositionsUAV.get(), EI_STATE_UAV, EI_STATE_UAV } };
+    commandContext.SubmitBarrier(1, flushSkinnedVerts);
+}
+
+godot::RID CollisionMesh::GetSkinnedPositionsRID() const {
+    return m_skinnedPositionsUAV ? m_skinnedPositionsUAV->rid : godot::RID();
+}
+
+godot::Vector3 CollisionMesh::GetRestPosition(int i) const {
+    if (i < 0 || i >= (int)m_positions.size()) {
+        return godot::Vector3();
+    }
+    return m_positions[i];
+}
+
+godot::Vector3 CollisionMesh::CpuSkinVertex(int vertexIndex, const godot::PackedByteArray& bone_matrices_snapshot) const {
+    if (vertexIndex < 0 || vertexIndex >= (int)m_positions.size() || vertexIndex >= (int)m_boneData.size()) {
+        return godot::Vector3();
+    }
+    if (bone_matrices_snapshot.size() < (int64_t)sizeof(XMMATRIX)) {
+        return godot::Vector3();
+    }
+
+    const XMMATRIX* matrices = reinterpret_cast<const XMMATRIX*>(bone_matrices_snapshot.ptr());
+    const int available = (int)(bone_matrices_snapshot.size() / (int64_t)sizeof(XMMATRIX));
+
+    // Same clamp/zero-pad rules as the GLSL kernel: indices are clamped into
+    // [0, kMaxSkinningBones-1]; anything past what UpdateSkinning() actually
+    // wrote into the UBO reads as a zero matrix (the UBO's unwritten tail).
+    auto boneMatrix = [&](int idx) -> XMMATRIX {
+        const int clamped = std::clamp(idx, 0, kMaxSkinningBones - 1);
+        if (clamped < available) {
+            return matrices[clamped];
+        }
+        return XMMATRIX();
+    };
+
+    const VertexBoneData& bd = m_boneData[vertexIndex];
+    const float w0 = bd.weight[0];
+    XMMATRIX bone_matrix = boneMatrix((int)bd.boneIndex[0]) * w0;
+    float weight_sum = w0;
+    for (int k = 1; k < 4; ++k) {
+        if (bd.weight[k] > 0.0f) {
+            bone_matrix += boneMatrix((int)bd.boneIndex[k]) * bd.weight[k];
+            weight_sum += bd.weight[k];
+        }
+    }
+    if (weight_sum > 1e-6f) {
+        bone_matrix /= weight_sum;
+    }
+
+    const godot::Vector3& p = m_positions[vertexIndex];
+    XMVECTOR posV{ p.x, p.y, p.z, 1.0f };
+    // Same packing convention as src/GodotScene.cpp: XMVector4Transform(v, M)
+    // on this row-major-packed M reproduces the GLSL kernel's (mat4(M) * vec4(v,1)).
+    const XMVECTOR skinned = XMVector4Transform(posV, bone_matrix);
+    return godot::Vector3(skinned.x, skinned.y, skinned.z);
 }

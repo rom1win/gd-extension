@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ce78yvkpwtpay"
+path="res://.godot/imported/TressFXBoneSkinning.BoneSkinning.comp.glsl-bf3337d11fd1eb4b91f4a8eac283b0fa.res"
+
+[deps]
+
+source_file="res://shaders/glsl/TressFXBoneSkinning.BoneSkinning.comp.glsl"
+dest_files=["res://.godot/imported/TressFXBoneSkinning.BoneSkinning.comp.glsl-bf3337d11fd1eb4b91f4a8eac283b0fa.res"]
+
+[params]
+

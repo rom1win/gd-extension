@@ -292,9 +292,18 @@ void TressFXCharacter::_process(double delta) {
             hair_ptrs.push_back((int64_t)(intptr_t)h.get());
         }
 
+        // A3.2 subtask 2: same snapshot-on-main-thread pattern as hair bones,
+        // one entry per collision mesh (each has its own EI_Scene/skeleton).
+        Array bones_per_coll;
+        PackedInt64Array coll_ptrs;
+        for (auto& c : m_collisionMeshes) {
+            bones_per_coll.append(c ? c->SnapshotBoneMatrices() : PackedByteArray());
+            coll_ptrs.push_back((int64_t)(intptr_t)c.get());
+        }
+
         RenderingServer::get_singleton()->call_on_render_thread(
             callable_mp(this, &TressFXCharacter::_rt_sim_tick)
-                .bind(dt, params, bones_per_hair, hair_ptrs,
+                .bind(dt, params, bones_per_hair, hair_ptrs, bones_per_coll, coll_ptrs,
                       (int64_t)(intptr_t)m_pSimulation.get(), gate_dump_frame));
     }
 
@@ -378,6 +387,7 @@ void TressFXCharacter::_rt_initialize_gpu(int64_t sim_ptr, const PackedInt64Arra
 
 void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         const Array& bones_per_hair, const PackedInt64Array& hair_ptrs,
+        const Array& bones_per_coll, const PackedInt64Array& coll_ptrs,
         int64_t sim_ptr, int64_t gate_dump_frame) {
     // RENDER thread. Inputs arrive by value; the sim/hair pointers stay valid
     // because teardown_gpu_runtime queues destruction behind this call (FIFO).
@@ -392,6 +402,13 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         ctx.hairStrands.push_back(reinterpret_cast<HairStrands*>((intptr_t)hair_ptrs[i]));
         if (i < bones_per_hair.size()) {
             ctx.bone_matrices.push_back((PackedByteArray)bones_per_hair[i]);
+        }
+    }
+    ctx.collisionMeshes.reserve((size_t)coll_ptrs.size());
+    for (int64_t i = 0; i < coll_ptrs.size(); ++i) {
+        ctx.collisionMeshes.push_back(reinterpret_cast<CollisionMesh*>((intptr_t)coll_ptrs[i]));
+        if (i < bones_per_coll.size()) {
+            ctx.collision_bone_matrices.push_back((PackedByteArray)bones_per_coll[i]);
         }
     }
 
@@ -426,7 +443,34 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
         }
     }
 
-    sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/false, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
+    // TEMPORARY (A3.2 subtask 2 verification only): bUpdateCollMesh is
+    // unconditionally true so the skin check below has something to read.
+    // Subtask 4 gates this behind a `sdf_collision_enabled` property.
+    sim->StartSimulation(dt, ctx, /*bUpdateCollMesh=*/true, /*bSDFCollisionResponse=*/false, /*bAsync=*/false);
+
+    // A3.2 subtask 2 one-shot verification: self-checks the kernel against a
+    // CPU reference computed from the SAME bone-matrix snapshot bytes used
+    // for this tick's GPU dispatch (ctx.collision_bone_matrices[0], still in
+    // scope -- not re-snapshotted, so this is valid even under animation).
+    // Fires once, ~sim tick 30, independent of the hair readback path below.
+    if (!m_coll_skin_check_done && tick >= 30 && !ctx.collisionMeshes.empty()) {
+        m_coll_skin_check_done = true;
+        CollisionMesh* c = ctx.collisionMeshes[0];
+        RenderingServer* rs_check = RenderingServer::get_singleton();
+        RenderingDevice* rd_check = rs_check ? rs_check->get_rendering_device() : nullptr;
+        if (c && c->IsValid() && rd_check) {
+            const RID skin_rid = c->GetSkinnedPositionsRID();
+            if (skin_rid.is_valid()) {
+                const int vb = std::min(6454, c->GetNumVertices() - 1);
+                const PackedByteArray bones = (!ctx.collision_bone_matrices.empty()) ? ctx.collision_bone_matrices[0] : PackedByteArray();
+                const Vector3 cpu_a = c->CpuSkinVertex(0, bones);
+                const Vector3 cpu_b = c->CpuSkinVertex(vb, bones);
+                rd_check->buffer_get_data_async(skin_rid,
+                    callable_mp(this, &TressFXCharacter::_on_coll_skin_check_async)
+                        .bind(c->GetRestPosition(0), c->GetRestPosition(vb), (int64_t)vb, cpu_a, cpu_b));
+            }
+        }
+    }
 
     // Queue async readbacks AFTER the dispatches so the data reflects this step.
     if (ctx.hairStrands.empty() || !ctx.hairStrands[0]) {
@@ -462,6 +506,43 @@ void TressFXCharacter::_rt_sim_tick(double dt, const PackedFloat32Array& params,
     if (gate_dump_frame > 0) {
         rd->buffer_get_data_async(rid,
             callable_mp(this, &TressFXCharacter::_on_gate_dump_async).bind(gate_dump_frame));
+    }
+}
+
+void TressFXCharacter::_on_coll_skin_check_async(const PackedByteArray& data, Vector3 rest_a, Vector3 rest_b,
+        int64_t vertex_b, Vector3 cpu_a, Vector3 cpu_b) {
+    // Render-thread callback. Interleaved StandardVertex layout (32 bytes/vertex:
+    // position.xyz+pad, normal.xyz+pad) -- matches CollisionMesh::EnsureGPUResourcesCreated.
+    const int64_t need_floats = (vertex_b + 1) * 8;
+    if (data.size() < need_floats * 4) {
+        UtilityFunctions::print("CollisionMesh SKIN CHECK: readback too small (", (int64_t)data.size(), " bytes)");
+        return;
+    }
+    const float* f = reinterpret_cast<const float*>(data.ptr());
+    const Vector3 gpu_a(f[0], f[1], f[2]);
+    const int64_t off_b = vertex_b * 8;
+    const Vector3 gpu_b(f[off_b + 0], f[off_b + 1], f[off_b + 2]);
+    UtilityFunctions::print(
+        "CollisionMesh SKIN CHECK: v0 rest=(", String::num(rest_a.x, 3), ",", String::num(rest_a.y, 3), ",", String::num(rest_a.z, 3),
+        ") gpu=(", String::num(gpu_a.x, 3), ",", String::num(gpu_a.y, 3), ",", String::num(gpu_a.z, 3),
+        ") cpu=(", String::num(cpu_a.x, 3), ",", String::num(cpu_a.y, 3), ",", String::num(cpu_a.z, 3),
+        ")  v", vertex_b, " rest=(", String::num(rest_b.x, 3), ",", String::num(rest_b.y, 3), ",", String::num(rest_b.z, 3),
+        ") gpu=(", String::num(gpu_b.x, 3), ",", String::num(gpu_b.y, 3), ",", String::num(gpu_b.z, 3),
+        ") cpu=(", String::num(cpu_b.x, 3), ",", String::num(cpu_b.y, 3), ",", String::num(cpu_b.z, 3), ")");
+
+    // Self-check pass bar: gpu ≈ cpu within float-readback tolerance,
+    // regardless of distance from rest (rest-vs-skinned distance alone can't
+    // distinguish "kernel bug" from "legitimately posed at capture time").
+    const float tol = 1e-3f;
+    const float diff_a = std::max({ std::abs(gpu_a.x - cpu_a.x), std::abs(gpu_a.y - cpu_a.y), std::abs(gpu_a.z - cpu_a.z) });
+    const float diff_b = std::max({ std::abs(gpu_b.x - cpu_b.x), std::abs(gpu_b.y - cpu_b.y), std::abs(gpu_b.z - cpu_b.z) });
+    if (diff_a > tol || diff_b > tol) {
+        UtilityFunctions::push_warning(
+            String("CollisionMesh SKIN CHECK: GPU/CPU MISMATCH exceeds tolerance ") + String::num(tol, 4) +
+            String(": max|diff| v0=") + String::num(diff_a, 6) +
+            String(" v") + String::num_int64(vertex_b) + String("=") + String::num(diff_b, 6));
+    } else {
+        UtilityFunctions::print("CollisionMesh SKIN CHECK: PASS (gpu matches cpu reference within ", String::num(tol, 4), ")");
     }
 }
 

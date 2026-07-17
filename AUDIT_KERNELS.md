@@ -139,3 +139,51 @@ and xyz-only writebacks match.
 2. Run the demo (F5): all six `[TressFX] ... compiled OK` lines, hair settles under
    gravity and follows the skeleton — consistent with "no kernel bug" and F1 active.
 3. Every finding above cites the HLSL line numbers; spot-check any of them side by side.
+
+---
+
+## SDF collision kernel ports (A3.2, 2026-07-17)
+
+New kernel, approved by the architect as an addition (the six audited
+`TressFXSimulation.*.comp.glsl` kernels above are untouched by this work).
+
+### S1 — `TressFXBoneSkinning.BoneSkinning` — ported
+
+Ported from `thirdparty/tressfx/src/Shaders/TressFXBoneSkinning.hlsl`, entry
+`BoneSkinning` (lines 57–94) to
+`demo/shaders/glsl/TressFXBoneSkinning.BoneSkinning.comp.glsl`. One thread per
+collision-mesh vertex; up to 4 weighted bone matrices applied to both
+position and normal, exactly as HLSL: accumulate `bone_matrix * weight` for
+each of the 4 bone slots with `weight > 0`, divide by `weight_sum`, then
+`pos = (bone_matrix * vec4(pos,1)).xyz`, `n = (bone_matrix * vec4(n,0)).xyz`.
+
+Deviations, both mechanical (HLSL→GLSL), not behavioral:
+- HLSL indexes `g_BoneSkinningMatrix[...]` directly by `boneIndex[k]`; the
+  GLSL clamps each index to `[0, AMD_TRESSFX_MAX_NUM_BONES-1]` before
+  indexing. This mirrors the existing defensive-clamp convention already used
+  by `TressFXSimulation.IntegrationAndGlobalShapeConstraints.comp.glsl`'s
+  `ApplyVertexBoneSkinning` (GLSL has no HLSL-style implicit bounds
+  behavior to rely on); never fires in practice since every boneIndex is a
+  valid skeleton bone index.
+- `AMD_TRESSFX_MAX_NUM_BONES` is 128 here (not AMD's 512), matching the value
+  already used by every `TressFXSimulation.*.comp.glsl` kernel and by
+  `kBoneCount` in `src/tressfx_character.cpp`. RatBoy's skeleton (and the
+  86-bone `Ratboy_body.tfxmesh`) stays well under this cap.
+- The matrix-packing convention is identical to the six sim kernels (see the
+  authoritative comment in `src/GodotScene.cpp`): the CPU packs a row-major
+  skinning matrix; GLSL reads the same bytes as column-major and multiplies
+  as `(M * v)`, reproducing HLSL's `mul(v, row_major_M)`.
+- The HLSL file's visualization entry points (`BoneSkinningVisualizationVS`/
+  `PS`) are NOT ported — no visualization pass exists or was requested this
+  subtask.
+
+### Host-side note (not a kernel, but part of this port)
+
+`TressFXBoneSkinning.cpp`'s host class is not compiled into this build (only
+`TressFXAsset.cpp`/`TressFXSimulation.cpp`/`TressFXHairObject.cpp`/
+`TressFXLayouts.cpp` are, per `Sconstruct`'s explicit keep list). Its
+Update()/Initialize() flow (bone-matrix UBO fill, dispatch sizing) was
+reimplemented directly in `src/SDF.cpp` (`CollisionMesh::EnsureSkinningPSOCreated`/
+`UpdateSkinning`), reusing the still-compiled `GetBoneSkinningMeshLayout()`
+from `TressFXLayouts.cpp` unchanged (its binding numbers — u0/t1/t2/b3 —
+are exactly what the new GLSL kernel declares).
