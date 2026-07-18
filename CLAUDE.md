@@ -311,14 +311,25 @@ heart; the C++ extension around them is the product.
   own mesh reproduces the `.tfxbone` weights — the answer key; (2) my own rigged
   Blender character imports, binds, and simulates. Only after Gate B may the `.tfx`
   parser be removed (or kept as a bonus format — my call then).
-  **Scope expanded 2026-07-16** (see "Stylized ribbons / feathers" under
-  Follow-ups): if stylized ribbons or feathers are wanted, the cooked schema
-  needs more than position/binding — a per-strand root frame (normal+tangent,
-  not just position), per-vertex twist angle, per-vertex width, a UV mode flag,
-  and a material slot. Decide the authoring convention (curve attributes vs.
-  deriving frame+twist from an authored ribbon mesh) EARLY in B — Blender's
-  Alembic export of custom curve attributes is limited, so this is a
-  feasibility question to test up front, not a detail to patch in at the end.
+  **Authoring convention DECIDED 2026-07-18 (feasibility experiment, commit
+  960db05 — `test_assets/` + `tools/inspect_abc.py`, run headless in Blender).**
+  Measured on Blender 5.0 stock exporters: strand geometry travels perfectly
+  (new curves system, uniform 8 control points/strand), per-point width
+  travels natively (Alembic `radius`), and the `.abc`/`.glb` coordinate
+  spaces MATCH exactly (sphere registration, 0.0000 deviation — no axis/scale
+  correction needed). Custom named curve attributes are DROPPED by the
+  exporter (proven: attributes present on the evaluated object in the .blend,
+  absent from the .abc), and Blender's tilt/orientation data doesn't cross
+  either. Decision (maintainer, no-add-on constraint): **stock exports only**
+  — hair as plain `.abc` (new curves system, NOT legacy particles: deprecated
+  and attribute-less), body as `.glb`; root frames DERIVED at bind time (the
+  bound scalp triangle's normal + strand initial direction), twist/width
+  ramps and texture/material modes authored per-hair-node IN GODOT, per-strand
+  variation via hash jitter. "Blender delivers geometry, Godot owns the look."
+  A sidecar-attribute Blender add-on remains a compatible escape hatch if
+  hand-authored per-strand data is ever wanted (would override derived values;
+  nothing in the design blocks it). `test_assets/hair_test.abc` + `.glb` are
+  the importer's reference inputs.
 - **C — packaging.** Release-template builds (not just debug), clean node API +
   parameter presets, docs, AMD license included. **Gate C:** a fresh Godot project can
   install the addon and put hair on a character following only the docs.
@@ -374,6 +385,13 @@ heart; the C++ extension around them is the product.
     simulation subsystem (3D grid build + scatter/gather passes) that AMD's
     own TressFX never shipped. Real payoff mostly on long flowing hair, minor
     on short fur like RatBoy's. Revisit after Phase B if ever, not before.
+    UPDATE 2026-07-18: Jolt Physics 5.6 shipped a GPU hair sim USING exactly
+    this technique (velocity grid for hair-to-hair) — evidence it's practical;
+    upgraded from "if ever" to "probably eventually, post-B". Jolt's Cosserat
+    rods also natively carry orientation frames — read their approach before
+    building the feather frame-transport pass (borrowable math, not solver).
+    Jolt hair is physics-only (no rendering/pipeline) and not integrated in
+    Godot; not a competitor to this project's end-to-end scope.
   - **ShortCut OIT** (proper transparency sort for dense semi-transparent
     strands). AMD's vendored code exists but needs custom render passes that
     fight Godot's pipeline — big lift for a benefit that only shows in extreme
