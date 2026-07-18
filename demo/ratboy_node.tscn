@@ -1,10 +1,11 @@
-[gd_scene load_steps=11 format=4 uid="uid://g11o8p2uu6sd"]
+[gd_scene load_steps=12 format=4 uid="uid://g11o8p2uu6sd"]
 
 [ext_resource type="Texture2D" uid="uid://oaapi8wtmemy" path="res://Meshes/RatBoy/Eye_diff.png" id="1_07qry"]
 [ext_resource type="Texture2D" uid="uid://2bpjca1d1fsx" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_BaseColor.png" id="2_i5nst"]
 [ext_resource type="Texture2D" uid="uid://c2xrkp8uottdp" path="res://Meshes/RatBoy/file12file10.jpg" id="3_4x01d"]
 [ext_resource type="Texture2D" uid="uid://bqmtsrgtgtvsc" path="res://Meshes/RatBoy/ratBoySubstanceReady_main_Normal.png" id="4_lx4lo"]
 [ext_resource type="Script" uid="uid://ho3f8wt3fpyp" path="res://head_shake.gd" id="5_headshake"]
+[ext_resource type="Texture2D" uid="uid://dhs3trebpdybv" path="res://textures/feather_fit_test.png" id="6_4x01d"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_nky7r"]
 resource_name = "ratboy_SHAVE:Ratboy_Eyes_MAT1"
@@ -1148,6 +1149,7 @@ shape = SubResource("CapsuleShape3D_j1lhe")
 
 [node name="TressFXCharacter" type="TressFXCharacter" parent="."]
 sdf_collision_enabled = true
+hair_texture = ExtResource("6_4x01d")
 
 [node name="Collision_body" type="TressFXCollisionNode" parent="TressFXCharacter"]
 tfx_mesh_file = "res://Meshes/HairAsset/Ratboy/Ratboy_body.tfxmesh"

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/color.hpp>
@@ -118,6 +119,12 @@ public:
     void set_hair_root_color(const godot::Color& c); godot::Color get_hair_root_color() const;
     void set_hair_tip_color(const godot::Color& c);  godot::Color get_hair_tip_color() const;
 
+    // Texture modes v1 (render-only): albedo/alpha modulation on top of the
+    // ribbon shading above. hair_texture_mode: 0=Off, 1=Tile, 2=Fit.
+    void set_hair_texture(const godot::Ref<godot::Texture2D>& tex); godot::Ref<godot::Texture2D> get_hair_texture() const;
+    void set_hair_texture_mode(int v); int get_hair_texture_mode() const;
+    void set_hair_texture_tiling(float v); float get_hair_texture_tiling() const;
+
     // Editor helper: rebuild CPU debug line meshes (safe in editor; no RenderingDevice usage).
     void rebuild_cpu_debug_visuals();
 
@@ -222,6 +229,11 @@ private:
     godot::Color m_hair_root_color = godot::Color(0.25f, 0.12f, 0.06f);
     godot::Color m_hair_tip_color  = godot::Color(0.55f, 0.35f, 0.18f);
     bool m_show_gpu_debug_lines = false;
+
+    // Texture modes v1: default Off (0) is pixel-identical to pre-feature behavior.
+    godot::Ref<godot::Texture2D> m_hair_texture;
+    int m_hair_texture_mode = 0;
+    float m_hair_texture_tiling = 4.0f;
 
     void build_ribbon_mesh_if_needed();
 

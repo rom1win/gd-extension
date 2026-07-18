@@ -146,6 +146,18 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_hair_tip_color"), &TressFXCharacter::get_hair_tip_color);
     ADD_PROPERTY(PropertyInfo(Variant::COLOR, "hair_tip_color"), "set_hair_tip_color", "get_hair_tip_color");
 
+    ClassDB::bind_method(D_METHOD("set_hair_texture", "tex"), &TressFXCharacter::set_hair_texture);
+    ClassDB::bind_method(D_METHOD("get_hair_texture"), &TressFXCharacter::get_hair_texture);
+    ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "hair_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_hair_texture", "get_hair_texture");
+
+    ClassDB::bind_method(D_METHOD("set_hair_texture_mode", "v"), &TressFXCharacter::set_hair_texture_mode);
+    ClassDB::bind_method(D_METHOD("get_hair_texture_mode"), &TressFXCharacter::get_hair_texture_mode);
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "hair_texture_mode", PROPERTY_HINT_ENUM, "Off,Tile,Fit"), "set_hair_texture_mode", "get_hair_texture_mode");
+
+    ClassDB::bind_method(D_METHOD("set_hair_texture_tiling", "v"), &TressFXCharacter::set_hair_texture_tiling);
+    ClassDB::bind_method(D_METHOD("get_hair_texture_tiling"), &TressFXCharacter::get_hair_texture_tiling);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "hair_texture_tiling", PROPERTY_HINT_RANGE, "0.1,64.0,0.1"), "set_hair_texture_tiling", "get_hair_texture_tiling");
+
     ClassDB::bind_method(D_METHOD("rebuild_cpu_debug_visuals"), &TressFXCharacter::rebuild_cpu_debug_visuals);
 
     // Keep as an explicit method for optional overlay viewers; do not expose as an inspector property.
@@ -1287,6 +1299,30 @@ void TressFXCharacter::set_hair_tip_color(const godot::Color& c) {
 }
 godot::Color TressFXCharacter::get_hair_tip_color() const { return m_hair_tip_color; }
 
+void TressFXCharacter::set_hair_texture(const godot::Ref<godot::Texture2D>& tex) {
+    m_hair_texture = tex;
+    if (m_gpu_ribbon_material.is_valid()) {
+        m_gpu_ribbon_material->set_shader_parameter("strand_texture", m_hair_texture);
+    }
+}
+godot::Ref<godot::Texture2D> TressFXCharacter::get_hair_texture() const { return m_hair_texture; }
+
+void TressFXCharacter::set_hair_texture_mode(int v) {
+    m_hair_texture_mode = v;
+    if (m_gpu_ribbon_material.is_valid()) {
+        m_gpu_ribbon_material->set_shader_parameter("texture_mode", m_hair_texture_mode);
+    }
+}
+int TressFXCharacter::get_hair_texture_mode() const { return m_hair_texture_mode; }
+
+void TressFXCharacter::set_hair_texture_tiling(float v) {
+    m_hair_texture_tiling = v;
+    if (m_gpu_ribbon_material.is_valid()) {
+        m_gpu_ribbon_material->set_shader_parameter("texture_tiling", m_hair_texture_tiling);
+    }
+}
+float TressFXCharacter::get_hair_texture_tiling() const { return m_hair_texture_tiling; }
+
 void TressFXCharacter::rebuild_cpu_debug_visuals() {
     // Intended for editor usage via a @tool script.
     // Safe: only builds CPU-side meshes and Node3D children.
@@ -1431,6 +1467,9 @@ void TressFXCharacter::refresh_gpu_debug_hair_lines_3d() {
             m_gpu_ribbon_material->set_shader_parameter("fiber_radius", m_hair_fiber_radius);
             m_gpu_ribbon_material->set_shader_parameter("root_color", Vector3(m_hair_root_color.r, m_hair_root_color.g, m_hair_root_color.b));
             m_gpu_ribbon_material->set_shader_parameter("tip_color", Vector3(m_hair_tip_color.r, m_hair_tip_color.g, m_hair_tip_color.b));
+            m_gpu_ribbon_material->set_shader_parameter("strand_texture", m_hair_texture);
+            m_gpu_ribbon_material->set_shader_parameter("texture_mode", m_hair_texture_mode);
+            m_gpu_ribbon_material->set_shader_parameter("texture_tiling", m_hair_texture_tiling);
         }
 
         MeshInstance3D* ribbon_mi = memnew(MeshInstance3D);

@@ -32,6 +32,15 @@ uniform float strand_thickness_variation = 0.25;
 // No geometry/vertex-count change -- same trick as the width clamp above.
 uniform float strand_length_variation = 0.15;
 
+// Texture modes v1: render-only albedo/alpha modulation, no sim/physics
+// involvement. 0 = off (default, pixel-identical to pre-texture behavior),
+// 1 = tile (repeats along the strand -- painted strand-clump look), 2 = fit
+// (stretches root-to-tip once, no repeat -- feathers/leaves). Camera-facing
+// only for now; real oriented feathers need Phase B's per-vertex frame data.
+uniform sampler2D strand_texture : source_color, filter_linear, repeat_enable, hint_default_white;
+uniform int texture_mode = 0;
+uniform float texture_tiling = 4.0;
+
 // Kajiya-Kay dual specular lobe constants. Reference:
 // thirdparty/tressfx/src/shaders/TressFXLighting.hlsl, ComputeDiffuseSpecFactors.
 // Not exposed as node properties -- these tune the "look" of the highlight
@@ -148,6 +157,20 @@ void fragment() {
     float length_fade = 1.0 - smoothstep(max_fraction - 0.08, max_fraction, v_fraction_of_strand);
 
     ALPHA = cross_section * v_alpha_scale * length_fade;
+
+    // Texture modes v1: multiply on top of everything above, never replace it.
+    // tile repeats strand_texture along the strand (painted clumps); fit
+    // stretches it once root->tip (feathers/leaves). Off (default) skips the
+    // sample entirely -- pixel-identical to before this feature existed.
+    if (texture_mode == 1) {
+        vec4 tex = texture(strand_texture, vec2(UV.y, fract(v_fraction_of_strand * texture_tiling)));
+        ALBEDO *= tex.rgb;
+        ALPHA *= tex.a;
+    } else if (texture_mode == 2) {
+        vec4 tex = texture(strand_texture, vec2(UV.y, v_fraction_of_strand));
+        ALBEDO *= tex.rgb;
+        ALPHA *= tex.a;
+    }
 
     // TANGENT here is already view-space (Godot transforms it for us); stash
     // it for light() below, which can't read TANGENT directly.
