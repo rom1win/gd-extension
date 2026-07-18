@@ -330,6 +330,24 @@ heart; the C++ extension around them is the product.
   hand-authored per-strand data is ever wanted (would override derived values;
   nothing in the design blocks it). `test_assets/hair_test.abc` + `.glb` are
   the importer's reference inputs.
+  **SUPERSEDED SAME DAY — headless extraction chosen as PRIMARY (2026-07-18,
+  maintainer decision; prototype proven, commit 343739d).** Instead of parsing
+  exported files, the importer invokes the user's installed Blender HEADLESS
+  (same mechanism Godot itself uses for .blend import; same "Blender
+  installed" requirement Godot already imposes, editor-time only) running a
+  small bpy script that ships inside OUR Godot addon — nothing to install in
+  Blender, nothing for users beyond the addon itself.
+  `tools/extract_hair_prototype.py` proves it: positions, per-curve AND
+  per-point custom attributes (which every file exporter drops), and
+  per-strand root `surface_uv_coordinate` (binding gold) all extracted from
+  `hair_test.blend` in one headless run, written to a JSON intermediate.
+  Consequences: hand-authored per-strand data (twist etc.) is BACK on the
+  table without any add-on; the C++ side consumes our own simple intermediate
+  format (the ".tfx parser swap" slot); `.abc` parsing is demoted to an
+  optional fallback for no-Blender pipelines (e.g. Houdini-authored grooms) —
+  decide at Phase C whether it's worth building at all. Derived root frames +
+  Godot-side ramps remain the DEFAULTS; authored attributes override them
+  when present.
 - **C — packaging.** Release-template builds (not just debug), clean node API +
   parameter presets, docs, AMD license included. **Gate C:** a fresh Godot project can
   install the addon and put hair on a character following only the docs.
