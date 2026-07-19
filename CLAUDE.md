@@ -348,6 +348,24 @@ heart; the C++ extension around them is the product.
   decide at Phase C whether it's worth building at all. Derived root frames +
   Godot-side ramps remain the DEFAULTS; authored attributes override them
   when present.
+  **B2 VERTICAL SLICE DONE (2026-07-19, commits acfa16b + 216e3b7,
+  maintainer-verified both scenes).** Blender groom → Godot simulation works
+  end to end: `tools/blender_hair_extract.py` (headless, uniform arc-length
+  resample to --vps, exact root/tip, chunked `.ghair` v1 written; spec lives
+  in `tools/verify_ghair.py`, the stdlib verifier) → `src/GhairLoader.cpp`
+  fills TressFXAsset exactly like the .tfx loader (incl. AMD's always-pad-to-
+  next-64 strand rule — expect a cosmetic tuft where padding strands stack on
+  the last real strand) → existing cooking (GenerateFollowHairs/ProcessAsset)
+  unchanged. `ghair_file` + `skeleton_node_path` properties on TressFXHairNode
+  (hair-only characters can now resolve a skeleton without a collision node).
+  Test scene `demo/blender_hair_test.tscn` (F6): 327-strand groom on a unit
+  sphere, single-bone identity skeleton, sims with roots planted. RatBoy .tfx
+  path untouched and re-verified. REMAINING for Phase B: real bone binding
+  from the glTF body (barycentric weights via root surface-UV/nearest
+  triangle — Gate B part 1 answer key = reproduce Ratboy .tfxbone), editor
+  automation (invoke Blender from the Godot importer instead of manual CLI),
+  hide padding strands (cosmetic), maintainer's own rigged character
+  (Gate B part 2).
 - **C — packaging.** Release-template builds (not just debug), clean node API +
   parameter presets, docs, AMD license included. **Gate C:** a fresh Godot project can
   install the addon and put hair on a character following only the docs.
