@@ -16,6 +16,10 @@ public:
         String name;
         String tfx_file;
         String tfx_bone_file;
+        // Phase B2.3: non-empty selects the .ghair loader (GhairLoader.h)
+        // instead of tfx_file/tfx_bone_file; single-bone rigid binding, no
+        // per-strand bone weights (see HairStrands.cpp).
+        String ghair_file;
         String hair_object_name;
         int mesh_surface_index = 0;
         int num_follow_hairs = 1;
@@ -24,6 +28,11 @@ public:
         // 0 = follow hairs sit exactly on their guides (invisible duplicates).
         // 0.012 is AMD's own sample value (NOTES.md issue H2).
         float follow_hair_radius = 0.012f;
+        // Optional fallback skeleton for characters with no TressFXCollisionNode
+        // (collision nodes normally supply the default skeleton -- see
+        // TressFXCharacter::load_all_assets). Character-relative NodePath,
+        // resolved in TressFXHairNode::_ready()/register_to_character().
+        String skeleton_node_path;
     };
 
     struct TressFXCollisionMeshDescription {
@@ -75,6 +84,12 @@ public:
     void set_follow_hair_radius(float p) { follow_hair_radius = p; }
     float get_follow_hair_radius() const { return follow_hair_radius; }
 
+    void set_ghair_file(const String &p) { ghair_file = p; }
+    String get_ghair_file() const { return ghair_file; }
+
+    void set_skeleton_node_path(const NodePath &p) { skeleton_node_path = p; }
+    NodePath get_skeleton_node_path() const { return skeleton_node_path; }
+
     // Public API exposed to scripts
     void load_tfx_asset();
     void bind_to_godot_mesh(const NodePath &mesh_node_path);
@@ -92,6 +107,8 @@ private:
     int num_follow_hairs = 1;
     float tip_separation = 1.0f;
     float follow_hair_radius = 0.012f;
+    String ghair_file;
+    NodePath skeleton_node_path;
 
     // node path to target mesh (set via inspector or bind call)
     NodePath target_mesh_path;

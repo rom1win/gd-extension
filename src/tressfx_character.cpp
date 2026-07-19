@@ -974,16 +974,19 @@ void TressFXCharacter::teardown_gpu_runtime() {
 }
 
 void TressFXCharacter::register_hair_description(const TressFXHairNode::TressFXObjectDescription &desc) {
-    // Dedupe by tfx_file to avoid duplicate registrations caused by both child
-    // self-registration and parent discovery.
+    // Dedupe by tfx_file (or ghair_file, for .ghair-loaded hair) to avoid
+    // duplicate registrations caused by both child self-registration and
+    // parent discovery.
     for (const auto &existing : m_hairDescriptions) {
-        if (existing.tfx_file == desc.tfx_file) {
-            UtilityFunctions::print(String("TressFXCharacter: hair already registered (skipping): ") + desc.tfx_file);
+        const bool same_tfx = !desc.tfx_file.is_empty() && existing.tfx_file == desc.tfx_file;
+        const bool same_ghair = !desc.ghair_file.is_empty() && existing.ghair_file == desc.ghair_file;
+        if (same_tfx || same_ghair) {
+            UtilityFunctions::print(String("TressFXCharacter: hair already registered (skipping): ") + desc.tfx_file + desc.ghair_file);
             return;
         }
     }
     m_hairDescriptions.push_back(desc);
-    UtilityFunctions::print(String("TressFXCharacter: registered hair: ") + desc.tfx_file);
+    UtilityFunctions::print(String("TressFXCharacter: registered hair: ") + desc.tfx_file + desc.ghair_file);
 }
 
 void TressFXCharacter::register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc, TressFXCollisionNode *node) {
@@ -1039,13 +1042,31 @@ void TressFXCharacter::load_all_assets() {
         UtilityFunctions::push_warning(String("TressFXCharacter: could not resolve Skeleton3D from collision skeleton_node_path: ") + d.skeleton_node_path);
     }
 
+    // Fallback: hair nodes can also provide `skeleton_node_path` directly, for
+    // characters with no TressFXCollisionNode (e.g. a hair-only .ghair test rig).
+    if (!default_skeleton) {
+        for (const auto& d : m_hairDescriptions) {
+            if (d.skeleton_node_path.is_empty()) {
+                continue;
+            }
+            Node* node = get_node_or_null(NodePath(d.skeleton_node_path));
+            Skeleton3D* sk = Object::cast_to<Skeleton3D>(node);
+            if (sk) {
+                default_skeleton = sk;
+                default_skeleton_path = d.skeleton_node_path;
+                break;
+            }
+            UtilityFunctions::push_warning(String("TressFXCharacter: could not resolve Skeleton3D from hair skeleton_node_path: ") + d.skeleton_node_path);
+        }
+    }
+
     if (default_skeleton) {
         UtilityFunctions::print(
-            String("TressFXCharacter: default skeleton resolved from collision node: path='") + default_skeleton_path +
+            String("TressFXCharacter: default skeleton resolved: path='") + default_skeleton_path +
             String("' bone_count=") + String::num_int64(default_skeleton->get_bone_count()));
     } else {
         UtilityFunctions::push_warning(
-            "TressFXCharacter: no default Skeleton3D resolved from collision nodes (bone skinning will be unavailable)");
+            "TressFXCharacter: no default Skeleton3D resolved (bone skinning will be unavailable)");
     }
 
     // Cache for Path A debug visualization: use the same authoritative skeleton.
@@ -1069,12 +1090,14 @@ void TressFXCharacter::load_all_assets() {
         const auto& d = m_hairDescriptions[i];
         const CharString tfx = d.tfx_file.utf8();
         const CharString tfxbone = d.tfx_bone_file.utf8();
+        const CharString ghair = d.ghair_file.utf8();
         const CharString obj = d.hair_object_name.utf8();
 
         UtilityFunctions::print(
             String("  HairStrands[") + String::num_int64(i) +
             String("] tfx='") + d.tfx_file +
             String("' bone='") + d.tfx_bone_file +
+            String("' ghair='") + d.ghair_file +
             String("' obj='") + d.hair_object_name +
             String("' follow=") + String::num_int64(d.num_follow_hairs) +
             String(" tip=") + String::num(d.tip_separation, 3) +
@@ -1091,6 +1114,7 @@ void TressFXCharacter::load_all_assets() {
             /*scene=*/m_adapterScenes.back().get(),
             tfx.get_data(),
             tfxbone.get_data(),
+            ghair.get_data(),
             obj.get_data(),
             d.num_follow_hairs,
             d.tip_separation,

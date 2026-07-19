@@ -4,6 +4,7 @@
 #include <godot_cpp/variant/variant.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/skeleton3d.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <vector>
 #include "tressfx_character.h"
@@ -36,14 +37,24 @@ void TressFXHairNode::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_follow_hair_radius", "p"), &TressFXHairNode::set_follow_hair_radius);
     ClassDB::bind_method(D_METHOD("get_follow_hair_radius"), &TressFXHairNode::get_follow_hair_radius);
 
+    ClassDB::bind_method(D_METHOD("set_ghair_file", "p"), &TressFXHairNode::set_ghair_file);
+    ClassDB::bind_method(D_METHOD("get_ghair_file"), &TressFXHairNode::get_ghair_file);
+
+    ClassDB::bind_method(D_METHOD("set_skeleton_node_path", "p"), &TressFXHairNode::set_skeleton_node_path);
+    ClassDB::bind_method(D_METHOD("get_skeleton_node_path"), &TressFXHairNode::get_skeleton_node_path);
+
     // Properties
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_file", PROPERTY_HINT_FILE, "*.tfx,*.tfxbone"), "set_tfx_file", "get_tfx_file");
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_bone_file", PROPERTY_HINT_FILE, "*.tfxbone"), "set_tfx_bone_file", "get_tfx_bone_file");
+    ADD_PROPERTY(PropertyInfo(Variant::STRING, "ghair_file", PROPERTY_HINT_FILE, "*.ghair"), "set_ghair_file", "get_ghair_file");
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "hair_object_name"), "set_hair_object_name", "get_hair_object_name");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "mesh_surface_index"), "set_mesh_surface_index", "get_mesh_surface_index");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "num_follow_hairs"), "set_num_follow_hairs", "get_num_follow_hairs");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tip_separation"), "set_tip_separation", "get_tip_separation");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "follow_hair_radius", PROPERTY_HINT_RANGE, "0.0,0.05,0.001"), "set_follow_hair_radius", "get_follow_hair_radius");
+    // Fallback skeleton for hair-only characters with no TressFXCollisionNode
+    // (which normally supplies the default skeleton -- see load_all_assets).
+    ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "skeleton_node_path"), "set_skeleton_node_path", "get_skeleton_node_path");
 
     // Editor helper: expose a method that returns available .tfx files
     ClassDB::bind_method(D_METHOD("find_tfx_files"), &TressFXHairNode::find_tfx_files);
@@ -67,7 +78,7 @@ void TressFXHairNode::_ready() {
     // On ready, attempt to find a parent TressFXCharacter and register our description.
     // We only register a minimal description; the character will own the runtime objects.
     Node *p = get_parent();
-    UtilityFunctions::print(String("TressFXHairNode::_ready() values: tfx_file='") + tfx_file + String("' tfx_bone_file='") + tfx_bone_file + String("' hair_object_name='") + hair_object_name);
+    UtilityFunctions::print(String("TressFXHairNode::_ready() values: tfx_file='") + tfx_file + String("' tfx_bone_file='") + tfx_bone_file + String("' ghair_file='") + ghair_file + String("' hair_object_name='") + hair_object_name);
     while (p) {
         TressFXCharacter *character = Object::cast_to<TressFXCharacter>(p);
         if (character) {
@@ -75,17 +86,31 @@ void TressFXHairNode::_ready() {
             last_object_description.name = hair_object_name.is_empty() ? String("tfx_object") : hair_object_name;
             last_object_description.tfx_file = tfx_file;
             last_object_description.tfx_bone_file = tfx_bone_file;
+            last_object_description.ghair_file = ghair_file;
             last_object_description.hair_object_name = hair_object_name;
             last_object_description.mesh_surface_index = mesh_surface_index;
             last_object_description.num_follow_hairs = num_follow_hairs;
             last_object_description.tip_separation = tip_separation;
             last_object_description.follow_hair_radius = follow_hair_radius;
 
-            // Only register if we have a tfx file set; otherwise skip to avoid empty entries.
-            if (!last_object_description.tfx_file.is_empty()) {
+            // Resolve the fallback skeleton path relative to the character (not
+            // this node), same convention as TressFXCollisionNode::_ready().
+            last_object_description.skeleton_node_path = String();
+            if (!skeleton_node_path.is_empty()) {
+                Node *sn = get_node_or_null(skeleton_node_path);
+                Skeleton3D *sk = Object::cast_to<Skeleton3D>(sn);
+                if (sk) {
+                    last_object_description.skeleton_node_path = String(character->get_path_to(sk));
+                } else {
+                    UtilityFunctions::push_warning(String("TressFXHairNode: skeleton_node_path set but is not a Skeleton3D: ") + String(skeleton_node_path));
+                }
+            }
+
+            // Only register if we have a tfx or ghair file set; otherwise skip to avoid empty entries.
+            if (!last_object_description.tfx_file.is_empty() || !last_object_description.ghair_file.is_empty()) {
                 character->register_hair_description(last_object_description);
             } else {
-                UtilityFunctions::print(String("TressFXHairNode: tfx_file is empty; skipping registration."));
+                UtilityFunctions::print(String("TressFXHairNode: tfx_file/ghair_file both empty; skipping registration."));
             }
             break;
         }
@@ -98,11 +123,14 @@ void TressFXHairNode::load_tfx_asset() {
     last_object_description.name = hair_object_name.is_empty() ? String("tfx_object") : hair_object_name;
     last_object_description.tfx_file = tfx_file;
     last_object_description.tfx_bone_file = tfx_bone_file;
+    last_object_description.ghair_file = ghair_file;
     last_object_description.hair_object_name = hair_object_name;
     last_object_description.mesh_surface_index = mesh_surface_index;
     last_object_description.num_follow_hairs = num_follow_hairs;
     last_object_description.tip_separation = tip_separation;
     last_object_description.follow_hair_radius = follow_hair_radius;
+    // Keep this as node-relative; register_to_character() rewrites to character-relative.
+    last_object_description.skeleton_node_path = String(skeleton_node_path);
 
     // For this first step we also create a minimal collision description (empty/default)
     last_collision_description.name = last_object_description.name + String("_collision");
@@ -126,10 +154,21 @@ void TressFXHairNode::register_to_character(TressFXCharacter *character) {
     // Ensure our description is populated, then call into the character.
     load_tfx_asset();
     if (character) {
-        if (!last_object_description.tfx_file.is_empty()) {
+        // Resolve the fallback skeleton path relative to the character (not this
+        // node), same convention as TressFXCollisionNode::register_to_character().
+        if (!skeleton_node_path.is_empty()) {
+            Node *sn = get_node_or_null(skeleton_node_path);
+            Skeleton3D *sk = Object::cast_to<Skeleton3D>(sn);
+            if (sk) {
+                last_object_description.skeleton_node_path = String(character->get_path_to(sk));
+            } else {
+                UtilityFunctions::push_warning(String("TressFXHairNode: skeleton_node_path set but is not a Skeleton3D: ") + String(skeleton_node_path));
+            }
+        }
+        if (!last_object_description.tfx_file.is_empty() || !last_object_description.ghair_file.is_empty()) {
             character->register_hair_description(last_object_description);
         } else {
-            UtilityFunctions::print(String("TressFXHairNode::register_to_character: tfx_file empty; skipping registration."));
+            UtilityFunctions::print(String("TressFXHairNode::register_to_character: tfx_file/ghair_file both empty; skipping registration."));
         }
     }
 }

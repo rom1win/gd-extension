@@ -17,6 +17,7 @@
 #include "TressFXLayouts.h"
 #include "GodotEngineInterfaceImpl.h"
 #include "GodotTressFXMath.h"
+#include "GhairLoader.h"
 
 static godot::String bytes_to_hex_prefix(const godot::PackedByteArray& bytes, int64_t max_bytes) {
     static const char* kHex = "0123456789ABCDEF";
@@ -136,6 +137,7 @@ HairStrands::HairStrands(
     EI_Scene* scene,
     const char* tfxFilePath,
     const char* tfxboneFilePath,
+    const char* ghairFilePath,
     const char* hairObjectName,
     int numFollowHairsPerGuideHair,
     float tipSeparationFactor,
@@ -146,6 +148,7 @@ HairStrands::HairStrands(
       m_skinNumber(skinNumber),
       m_tfxFilePath(tfxFilePath ? tfxFilePath : ""),
       m_tfxboneFilePath(tfxboneFilePath ? tfxboneFilePath : ""),
+      m_ghairFilePath(ghairFilePath ? ghairFilePath : ""),
       m_hairObjectName(hairObjectName ? hairObjectName : ""),
       m_numFollowHairsPerGuideHair(numFollowHairsPerGuideHair),
       m_tipSeparationFactor(tipSeparationFactor),
@@ -155,38 +158,62 @@ HairStrands::HairStrands(
     // Do not create TressFXHairObject yet (it needs a real EI_Device and command context).
     // This keeps runtime safe while we bring up the rendering backend.
 
+    const bool use_ghair = !m_ghairFilePath.empty();
+
         godot::UtilityFunctions::print(
                 godot::String("HairStrands: constructed renderIndex=") + godot::String::num_int64(m_renderIndex) +
                 godot::String(" skin=") + godot::String::num_int64(m_skinNumber) +
                 godot::String(" tfx='") + godot::String(m_tfxFilePath.c_str()) +
                 godot::String("' bone='") + godot::String(m_tfxboneFilePath.c_str()) +
+                godot::String("' ghair='") + godot::String(m_ghairFilePath.c_str()) +
                 godot::String("' obj='") + godot::String(m_hairObjectName.c_str()) +
                 godot::String("'"));
 
             // Step 0: prove we can read the assets the user configured.
             // (This does not parse the formats yet; it just proves file access and logs a small header.)
-            log_file_probe("tfx", m_tfxFilePath);
-            log_file_probe("tfxbone", m_tfxboneFilePath);
+            if (use_ghair) {
+                log_file_probe("ghair", m_ghairFilePath);
+            } else {
+                log_file_probe("tfx", m_tfxFilePath);
+                log_file_probe("tfxbone", m_tfxboneFilePath);
+            }
 
             // Step 1: actually load the asset data via TressFXAsset (CPU-side only).
             // This does not require EI_Device or any GPU resources.
             m_asset = std::make_unique<TressFXAsset>();
 
-            FILE* hair_fp = open_file_for_tressfx(m_tfxFilePath);
-            if (!hair_fp) {
-                godot::UtilityFunctions::print(
-                    godot::String("HairStrands: TressFXAsset hair open FAILED: '") + godot::String(m_tfxFilePath.c_str()) + godot::String("'"));
-                m_asset.reset();
-                return;
-            }
+            int ghair_raw_strands = 0;
+            if (use_ghair) {
+                FILE* ghair_fp = open_file_for_tressfx(m_ghairFilePath);
+                if (!ghair_fp) {
+                    godot::UtilityFunctions::push_warning(
+                        godot::String("HairStrands: .ghair open FAILED: '") + godot::String(m_ghairFilePath.c_str()) + godot::String("'"));
+                    m_asset.reset();
+                    return;
+                }
+                const bool ghair_ok = GhairLoader::LoadHairData(ghair_fp, m_ghairFilePath.c_str(), m_asset.get(), &ghair_raw_strands);
+                std::fclose(ghair_fp);
+                if (!ghair_ok) {
+                    m_asset.reset();
+                    return;
+                }
+            } else {
+                FILE* hair_fp = open_file_for_tressfx(m_tfxFilePath);
+                if (!hair_fp) {
+                    godot::UtilityFunctions::print(
+                        godot::String("HairStrands: TressFXAsset hair open FAILED: '") + godot::String(m_tfxFilePath.c_str()) + godot::String("'"));
+                    m_asset.reset();
+                    return;
+                }
 
-            const bool hair_ok = m_asset->LoadHairData(hair_fp);
-            std::fclose(hair_fp);
-            if (!hair_ok) {
-                godot::UtilityFunctions::print(
-                    godot::String("HairStrands: TressFXAsset::LoadHairData FAILED for '") + godot::String(m_tfxFilePath.c_str()) + godot::String("'"));
-                m_asset.reset();
-                return;
+                const bool hair_ok = m_asset->LoadHairData(hair_fp);
+                std::fclose(hair_fp);
+                if (!hair_ok) {
+                    godot::UtilityFunctions::print(
+                        godot::String("HairStrands: TressFXAsset::LoadHairData FAILED for '") + godot::String(m_tfxFilePath.c_str()) + godot::String("'"));
+                    m_asset.reset();
+                    return;
+                }
             }
 
             // Optional follow hairs. Radius > 0 fans them out around their
@@ -203,8 +230,17 @@ HairStrands::HairStrands(
                 return;
             }
 
-            // Bone data is optional but usually required for skinned characters.
-            if (!m_tfxboneFilePath.empty() && m_pScene) {
+            if (use_ghair) {
+                // No per-strand bone weights in .ghair v1: single-bone test rig.
+                GhairLoader::FillUniformBoneSkinning(m_asset.get());
+                godot::UtilityFunctions::print(
+                    godot::String("GhairLoader: loaded '") + godot::String(m_ghairFilePath.c_str()) +
+                    godot::String("' strands=") + godot::String::num_int64(ghair_raw_strands) +
+                    godot::String(" vps=") + godot::String::num_int64(m_asset->m_numVerticesPerStrand) +
+                    godot::String(" (padded to ") + godot::String::num_int64(m_asset->m_numGuideStrands) +
+                    godot::String(") followTotal=") + godot::String::num_int64(m_asset->m_numTotalStrands));
+            } else if (!m_tfxboneFilePath.empty() && m_pScene) {
+                // Bone data is optional but usually required for skinned characters.
                 FILE* bone_fp = open_file_for_tressfx(m_tfxboneFilePath);
                 if (!bone_fp) {
                     godot::UtilityFunctions::print(

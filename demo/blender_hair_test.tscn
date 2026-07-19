@@ -1,0 +1,44 @@
+[gd_scene load_steps=4 format=3 uid="uid://c3ky4qejun40g"]
+
+[ext_resource type="Script" uid="uid://c5yw6jrt1ity3" path="res://free_cam.gd" id="1_freecam"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_emitter"]
+radius = 1.0
+height = 2.0
+
+[sub_resource type="Environment" id="Environment_test"]
+ambient_light_source = 2
+
+[node name="BlenderHairTest" type="Node3D"]
+
+[node name="Emitter" type="MeshInstance3D" parent="."]
+mesh = SubResource("SphereMesh_emitter")
+
+[node name="Skeleton3D" type="Skeleton3D" parent="."]
+bones/0/name = "root"
+bones/0/parent = -1
+bones/0/rest = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+bones/0/enabled = true
+bones/0/position = Vector3(0, 0, 0)
+bones/0/rotation = Quaternion(0, 0, 0, 1)
+bones/0/scale = Vector3(1, 1, 1)
+
+[node name="TressFXCharacter" type="TressFXCharacter" parent="."]
+
+[node name="Hair_test" type="TressFXHairNode" parent="TressFXCharacter"]
+ghair_file = "res://Meshes/HairAsset/BlenderTest/hair_test.ghair"
+hair_object_name = "blender_test_hair"
+skeleton_node_path = NodePath("../../Skeleton3D")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.965926, -0.258819, 0, 0.258819, 0.965926, 0, 0.6, 3.5)
+current = true
+script = ExtResource("1_freecam")
+
+[node name="OmniLight3D" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 2, 2)
+light_energy = 3.0
+omni_range = 10.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_test")
