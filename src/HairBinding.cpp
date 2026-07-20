@@ -319,39 +319,7 @@ bool HairBinding::BindRootsToGodotMesh(
         godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh has no surfaces");
         return false;
     }
-
-    const godot::Array arrays = mesh->surface_get_arrays(0);
-    if (arrays.size() <= godot::Mesh::ARRAY_INDEX) {
-        godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh surface 0 has no array data");
-        return false;
-    }
-
-    const godot::PackedVector3Array verts = arrays[godot::Mesh::ARRAY_VERTEX];
-    const godot::PackedInt32Array indices = arrays[godot::Mesh::ARRAY_INDEX];
-    const godot::Variant bones_v = arrays[godot::Mesh::ARRAY_BONES];
-    const godot::Variant weights_v = arrays[godot::Mesh::ARRAY_WEIGHTS];
-    if (verts.size() == 0 || bones_v.get_type() != godot::Variant::PACKED_INT32_ARRAY ||
-        weights_v.get_type() != godot::Variant::PACKED_FLOAT32_ARRAY) {
-        godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh has no bone weights (not a skinned mesh?)");
-        return false;
-    }
-    const godot::PackedInt32Array bones = bones_v;
-    const godot::PackedFloat32Array weights = weights_v;
-
-    const int64_t vcount = verts.size();
-    const int64_t influences = (vcount > 0) ? (bones.size() / vcount) : 0;
-    if (influences != 4 && influences != 8) {
-        godot::UtilityFunctions::push_warning(godot::String("HairBinding: unexpected bone-influence width ") +
-            godot::String::num_int64(influences) + godot::String(" (expected 4 or 8)"));
-        return false;
-    }
-    if (influences == 8) {
-        static bool warned_eight = false;
-        if (!warned_eight) {
-            warned_eight = true;
-            godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh uses 8-bone weights; using first 4 influences (renormalized)");
-        }
-    }
+    const int32_t surfaceCount = mesh->get_surface_count();
 
     // Mesh-local (Skin bind-index) bone index -> Skeleton3D bone index, by name.
     godot::Ref<godot::Skin> skin = body_mesh->get_skin();
@@ -396,46 +364,112 @@ bool HairBinding::BindRootsToGodotMesh(
 
     const godot::Transform3D toSkeletonSpace = MeshLocalToSkeletonModelSpace(body_mesh, skeleton);
 
-    std::vector<Vector3> meshVerts(vcount);
-    std::vector<std::array<int, 4>> boneIndices4(vcount);
-    std::vector<std::array<float, 4>> boneWeights4(vcount);
+    // Concatenate every surface into one combined vertex/triangle set (a
+    // multi-surface ArrayMesh -- e.g. RatBoy's body has an eye/face surface
+    // plus the rest of the body -- must contribute all of its geometry, not
+    // just surface 0, or roots snap to whichever surface happened to load
+    // first). Each surface's indices are offset by the vertex count
+    // accumulated so far.
+    std::vector<Vector3> meshVerts;
+    std::vector<std::array<int, 4>> boneIndices4;
+    std::vector<std::array<float, 4>> boneWeights4;
+    std::vector<std::array<int, 3>> triangles;
     int resolvedWeightVerts = 0;
-    for (int64_t vi = 0; vi < vcount; ++vi) {
-        const godot::Vector3 gp = toSkeletonSpace.xform(verts[vi]);
-        meshVerts[vi] = Vector3(gp.x, gp.y, gp.z);
+    static bool warned_eight = false;
 
-        bool anyResolved = false;
-        for (int k = 0; k < 4; ++k) {
-            const int64_t bindIdx = bones[vi * influences + k];
-            const float w = weights[vi * influences + k];
-            int skelIdx = -1;
-            if (w > 0.0f && bindIdx >= 0 && bindIdx < bindCount) {
-                skelIdx = bindToSkeleton[bindIdx];
-            }
-            boneIndices4[vi][k] = skelIdx;
-            boneWeights4[vi][k] = (skelIdx >= 0) ? w : 0.0f;
-            if (skelIdx >= 0) anyResolved = true;
+    for (int32_t si = 0; si < surfaceCount; ++si) {
+        const godot::Array arrays = mesh->surface_get_arrays(si);
+        if (arrays.size() <= godot::Mesh::ARRAY_INDEX) {
+            continue; // malformed surface, skip
         }
-        if (anyResolved) ++resolvedWeightVerts;
+        const godot::PackedVector3Array verts = arrays[godot::Mesh::ARRAY_VERTEX];
+        const godot::PackedInt32Array indices = arrays[godot::Mesh::ARRAY_INDEX];
+        const godot::Variant bones_v = arrays[godot::Mesh::ARRAY_BONES];
+        const godot::Variant weights_v = arrays[godot::Mesh::ARRAY_WEIGHTS];
+        const int64_t svcount = verts.size();
+        if (svcount == 0 || bones_v.get_type() != godot::Variant::PACKED_INT32_ARRAY ||
+            weights_v.get_type() != godot::Variant::PACKED_FLOAT32_ARRAY) {
+            continue; // surface has no bone weights (not skinned), skip
+        }
+        const godot::PackedInt32Array bones = bones_v;
+        const godot::PackedFloat32Array weights = weights_v;
+
+        const int64_t influences = bones.size() / svcount;
+        if (influences != 4 && influences != 8) {
+            godot::UtilityFunctions::push_warning(godot::String("HairBinding: surface ") + godot::String::num_int64(si) +
+                godot::String(" unexpected bone-influence width ") + godot::String::num_int64(influences) +
+                godot::String(" (expected 4 or 8), skipping surface"));
+            continue;
+        }
+        if (influences == 8 && !warned_eight) {
+            warned_eight = true;
+            godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh uses 8-bone weights; using first 4 influences (renormalized)");
+        }
+
+        const int64_t vertexOffset = (int64_t)meshVerts.size();
+        meshVerts.reserve(meshVerts.size() + svcount);
+        boneIndices4.reserve(boneIndices4.size() + svcount);
+        boneWeights4.reserve(boneWeights4.size() + svcount);
+
+        for (int64_t vi = 0; vi < svcount; ++vi) {
+            const godot::Vector3 gp = toSkeletonSpace.xform(verts[vi]);
+            meshVerts.push_back(Vector3(gp.x, gp.y, gp.z));
+
+            std::array<int, 4> bi{ -1, -1, -1, -1 };
+            std::array<float, 4> bw{ 0.0f, 0.0f, 0.0f, 0.0f };
+            bool anyResolved = false;
+            for (int k = 0; k < 4; ++k) {
+                const int64_t bindIdx = bones[vi * influences + k];
+                const float w = weights[vi * influences + k];
+                int skelIdx = -1;
+                if (w > 0.0f && bindIdx >= 0 && bindIdx < bindCount) {
+                    skelIdx = bindToSkeleton[bindIdx];
+                }
+                bi[k] = skelIdx;
+                bw[k] = (skelIdx >= 0) ? w : 0.0f;
+                if (skelIdx >= 0) anyResolved = true;
+            }
+            boneIndices4.push_back(bi);
+            boneWeights4.push_back(bw);
+            if (anyResolved) ++resolvedWeightVerts;
+        }
+
+        if (indices.size() >= 3) {
+            const size_t base = triangles.size();
+            const size_t triCount = (size_t)indices.size() / 3;
+            triangles.resize(base + triCount);
+            for (size_t ti = 0; ti < triCount; ++ti) {
+                triangles[base + ti] = {
+                    (int)(indices[(int)ti * 3 + 0] + vertexOffset),
+                    (int)(indices[(int)ti * 3 + 1] + vertexOffset),
+                    (int)(indices[(int)ti * 3 + 2] + vertexOffset)
+                };
+            }
+        } else if (svcount >= 3) {
+            // Non-indexed surface: vertices are already grouped in triangle triples.
+            const size_t base = triangles.size();
+            const size_t triCount = (size_t)svcount / 3;
+            triangles.resize(base + triCount);
+            for (size_t ti = 0; ti < triCount; ++ti) {
+                triangles[base + ti] = {
+                    (int)(ti * 3 + 0 + vertexOffset),
+                    (int)(ti * 3 + 1 + vertexOffset),
+                    (int)(ti * 3 + 2 + vertexOffset)
+                };
+            }
+        }
     }
+
     if (outMeshDiag) {
-        outMeshDiag->vertexCount = (int)vcount;
+        outMeshDiag->vertexCount = (int)meshVerts.size();
         outMeshDiag->resolvedWeightVerts = resolvedWeightVerts;
     }
 
-    std::vector<std::array<int, 3>> triangles;
-    if (indices.size() >= 3) {
-        triangles.resize(indices.size() / 3);
-        for (size_t ti = 0; ti < triangles.size(); ++ti) {
-            triangles[ti] = { indices[(int)ti * 3 + 0], indices[(int)ti * 3 + 1], indices[(int)ti * 3 + 2] };
-        }
-    } else if (vcount >= 3) {
-        // Non-indexed surface: vertices are already grouped in triangle triples.
-        triangles.resize((size_t)vcount / 3);
-        for (size_t ti = 0; ti < triangles.size(); ++ti) {
-            triangles[ti] = { (int)ti * 3 + 0, (int)ti * 3 + 1, (int)ti * 3 + 2 };
-        }
-    } else {
+    if (meshVerts.empty()) {
+        godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh has no bone weights on any surface (not a skinned mesh?)");
+        return false;
+    }
+    if (triangles.empty()) {
         godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh has no usable triangles");
         return false;
     }
