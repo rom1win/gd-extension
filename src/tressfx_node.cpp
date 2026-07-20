@@ -5,6 +5,7 @@
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/skeleton3d.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <vector>
 #include "tressfx_character.h"
@@ -43,6 +44,9 @@ void TressFXHairNode::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_skeleton_node_path", "p"), &TressFXHairNode::set_skeleton_node_path);
     ClassDB::bind_method(D_METHOD("get_skeleton_node_path"), &TressFXHairNode::get_skeleton_node_path);
 
+    ClassDB::bind_method(D_METHOD("set_bind_body_path", "p"), &TressFXHairNode::set_bind_body_path);
+    ClassDB::bind_method(D_METHOD("get_bind_body_path"), &TressFXHairNode::get_bind_body_path);
+
     // Properties
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_file", PROPERTY_HINT_FILE, "*.tfx,*.tfxbone"), "set_tfx_file", "get_tfx_file");
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_bone_file", PROPERTY_HINT_FILE, "*.tfxbone"), "set_tfx_bone_file", "get_tfx_bone_file");
@@ -55,6 +59,8 @@ void TressFXHairNode::_bind_methods() {
     // Fallback skeleton for hair-only characters with no TressFXCollisionNode
     // (which normally supplies the default skeleton -- see load_all_assets).
     ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "skeleton_node_path"), "set_skeleton_node_path", "get_skeleton_node_path");
+    // B3.2: MeshInstance3D to bind .ghair roots to (see HairBinding.h); empty = unset (uniform fallback).
+    ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "bind_body_path"), "set_bind_body_path", "get_bind_body_path");
 
     // Editor helper: expose a method that returns available .tfx files
     ClassDB::bind_method(D_METHOD("find_tfx_files"), &TressFXHairNode::find_tfx_files);
@@ -106,6 +112,18 @@ void TressFXHairNode::_ready() {
                 }
             }
 
+            // Resolve the body-mesh bind target the same way (character-relative).
+            last_object_description.bind_body_path = String();
+            if (!bind_body_path.is_empty()) {
+                Node *bn = get_node_or_null(bind_body_path);
+                MeshInstance3D *bm = Object::cast_to<MeshInstance3D>(bn);
+                if (bm) {
+                    last_object_description.bind_body_path = String(character->get_path_to(bm));
+                } else {
+                    UtilityFunctions::push_warning(String("TressFXHairNode: bind_body_path set but is not a MeshInstance3D: ") + String(bind_body_path));
+                }
+            }
+
             // Only register if we have a tfx or ghair file set; otherwise skip to avoid empty entries.
             if (!last_object_description.tfx_file.is_empty() || !last_object_description.ghair_file.is_empty()) {
                 character->register_hair_description(last_object_description);
@@ -131,6 +149,7 @@ void TressFXHairNode::load_tfx_asset() {
     last_object_description.follow_hair_radius = follow_hair_radius;
     // Keep this as node-relative; register_to_character() rewrites to character-relative.
     last_object_description.skeleton_node_path = String(skeleton_node_path);
+    last_object_description.bind_body_path = String(bind_body_path);
 
     // For this first step we also create a minimal collision description (empty/default)
     last_collision_description.name = last_object_description.name + String("_collision");
@@ -163,6 +182,15 @@ void TressFXHairNode::register_to_character(TressFXCharacter *character) {
                 last_object_description.skeleton_node_path = String(character->get_path_to(sk));
             } else {
                 UtilityFunctions::push_warning(String("TressFXHairNode: skeleton_node_path set but is not a Skeleton3D: ") + String(skeleton_node_path));
+            }
+        }
+        if (!bind_body_path.is_empty()) {
+            Node *bn = get_node_or_null(bind_body_path);
+            MeshInstance3D *bm = Object::cast_to<MeshInstance3D>(bn);
+            if (bm) {
+                last_object_description.bind_body_path = String(character->get_path_to(bm));
+            } else {
+                UtilityFunctions::push_warning(String("TressFXHairNode: bind_body_path set but is not a MeshInstance3D: ") + String(bind_body_path));
             }
         }
         if (!last_object_description.tfx_file.is_empty() || !last_object_description.ghair_file.is_empty()) {

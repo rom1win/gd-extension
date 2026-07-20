@@ -106,6 +106,10 @@ void TressFXCharacter::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_debug_force_fixed_dt"), &TressFXCharacter::get_debug_force_fixed_dt);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_force_fixed_dt"), "set_debug_force_fixed_dt", "get_debug_force_fixed_dt");
 
+    ClassDB::bind_method(D_METHOD("set_debug_bind_check", "enabled"), &TressFXCharacter::set_debug_bind_check);
+    ClassDB::bind_method(D_METHOD("get_debug_bind_check"), &TressFXCharacter::get_debug_bind_check);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_bind_check"), "set_debug_bind_check", "get_debug_bind_check");
+
     ClassDB::bind_method(D_METHOD("set_gravity_magnitude", "v"), &TressFXCharacter::set_gravity_magnitude);
     ClassDB::bind_method(D_METHOD("get_gravity_magnitude"), &TressFXCharacter::get_gravity_magnitude);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gravity_magnitude", PROPERTY_HINT_RANGE, "0.0,1.0,0.001"), "set_gravity_magnitude", "get_gravity_magnitude");
@@ -1110,6 +1114,17 @@ void TressFXCharacter::load_all_assets() {
             String("  HairStrands[") + String::num_int64(i) +
             String("] skeleton=") + (default_skeleton ? String("OK") : String("NULL")));
 
+        // B3.2: resolve the optional body-mesh bind target (character-relative,
+        // set by TressFXHairNode::register_to_character()).
+        MeshInstance3D* bind_body_mesh = nullptr;
+        if (!d.bind_body_path.is_empty()) {
+            Node* bn = get_node_or_null(NodePath(d.bind_body_path));
+            bind_body_mesh = Object::cast_to<MeshInstance3D>(bn);
+            if (!bind_body_mesh) {
+                UtilityFunctions::push_warning(String("TressFXCharacter: could not resolve MeshInstance3D from bind_body_path: ") + d.bind_body_path);
+            }
+        }
+
         m_hairStrands.push_back(std::make_unique<HairStrands>(
             /*scene=*/m_adapterScenes.back().get(),
             tfx.get_data(),
@@ -1120,7 +1135,8 @@ void TressFXCharacter::load_all_assets() {
             d.tip_separation,
             d.follow_hair_radius,
             /*skinNumber=*/0,
-            /*renderIndex=*/i));
+            /*renderIndex=*/i,
+            bind_body_mesh));
     }
 
     for (int i = 0; i < (int)m_collisionDescriptions.size(); ++i) {
@@ -1175,8 +1191,69 @@ void TressFXCharacter::load_all_assets() {
         String("TressFXCharacter: adapters created hair=") + String::num_int64((int)m_hairStrands.size()) +
         String(" coll=") + String::num_int64((int)m_collisionMeshes.size()));
 
+    if (m_debug_bind_check) {
+        run_debug_bind_check(default_skeleton);
+    }
+
     refresh_backend_mode();
     refresh_debug_hair_lines();
+}
+
+void TressFXCharacter::run_debug_bind_check(Skeleton3D* default_skeleton) {
+    // B3.2 diagnostic: reproduce tools/bind_hair_prototype.py's Gate B1
+    // measurement (top1/meanL1 against the .tfxbone answer key), but against
+    // the REAL Godot-imported body mesh instead of Ratboy_body.tfxmesh (a
+    // different, denser mesh -- see the task note in the caller's docs).
+    // Looser agreement than the Python gate's 100%/0.0001 is therefore
+    // EXPECTED, not a regression. Heavy lifting lives in HairStrands::
+    // RunDebugBindCheck (needs TressFXAsset/Vector3 types unsafe to include
+    // here -- this file's `using namespace godot` would collide with AMD's
+    // global ::Vector3).
+    if (!default_skeleton) {
+        UtilityFunctions::push_warning("BIND CHECK: no resolved Skeleton3D; skipping");
+        return;
+    }
+
+    // Find the first .tfx+.tfxbone hair (the answer key comes from its
+    // already-loaded m_boneSkinningData).
+    int hair_index = -1;
+    for (int i = 0; i < (int)m_hairDescriptions.size(); ++i) {
+        const auto& d = m_hairDescriptions[i];
+        if (!d.tfx_file.is_empty() && !d.tfx_bone_file.is_empty()) {
+            hair_index = i;
+            break;
+        }
+    }
+    if (hair_index < 0 || hair_index >= (int)m_hairStrands.size()) {
+        UtilityFunctions::push_warning("BIND CHECK: no .tfx+.tfxbone hair found; skipping");
+        return;
+    }
+
+    // The RatBoy body: first MeshInstance3D child of the resolved skeleton.
+    MeshInstance3D* body_mesh = nullptr;
+    for (int i = 0; i < default_skeleton->get_child_count(); ++i) {
+        body_mesh = Object::cast_to<MeshInstance3D>(default_skeleton->get_child(i));
+        if (body_mesh) break;
+    }
+    if (!body_mesh) {
+        UtilityFunctions::push_warning("BIND CHECK: no MeshInstance3D found under the skeleton; skipping");
+        return;
+    }
+
+    int num_roots = 0;
+    double top1_pct = 0.0, mean_l1 = 0.0, max_l1 = 0.0;
+    if (!m_hairStrands[hair_index]->RunDebugBindCheck(body_mesh, default_skeleton, num_roots, top1_pct, mean_l1, max_l1)) {
+        UtilityFunctions::push_warning("BIND CHECK: binding failed (asset/bone data not loaded, or body mesh has no Skin resource?)");
+        return;
+    }
+
+    const bool pass = (top1_pct >= 99.0) && (mean_l1 <= 0.01);
+    UtilityFunctions::print(
+        String("BIND CHECK: roots=") + String::num_int64(num_roots) +
+        String(" top1=") + String::num(top1_pct, 1) + String("%") +
+        String(" meanL1=") + String::num(mean_l1, 4) +
+        String(" maxL1=") + String::num(max_l1, 4) +
+        String(" ") + (pass ? String("PASS") : String("SUSPICIOUS")));
 }
 
 void TressFXCharacter::set_debug_draw_hair_lines(bool enabled) {
@@ -1268,6 +1345,14 @@ void TressFXCharacter::set_debug_force_fixed_dt(bool enabled) {
 
 bool TressFXCharacter::get_debug_force_fixed_dt() const {
     return m_debug_force_fixed_dt;
+}
+
+void TressFXCharacter::set_debug_bind_check(bool enabled) {
+    m_debug_bind_check = enabled;
+}
+
+bool TressFXCharacter::get_debug_bind_check() const {
+    return m_debug_bind_check;
 }
 
 void TressFXCharacter::set_wind_velocity(const godot::Vector3& wind_velocity) {

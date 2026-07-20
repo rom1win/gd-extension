@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdio>
+#include <vector>
 
 class TressFXAsset;
+struct TressFXBoneSkinningData;
 
 // Parses the Blender headless-export ".ghair" v1 format (tools/verify_ghair.py
 // is the authoritative doc -- keep this in sync with it, not the other way
@@ -31,5 +33,14 @@ bool LoadHairData(FILE* file, const char* debug_path, TressFXAsset* asset, int* 
 // authored skin data in .ghair v1), so it targets a single-bone test rig.
 // Call after asset->GenerateFollowHairs() so m_numTotalStrands is final.
 void FillUniformBoneSkinning(TressFXAsset* asset);
+
+// B3.2: same slot layout/fan-out as FillUniformBoneSkinning (every strand
+// slot filled, guide AND follow -- follow slots duplicate their guide's data
+// since UpdateFollowHairVertices overwrites their positions anyway), but
+// sourced from real per-guide binding data instead of a single rigid bone.
+// `perGuideSkinning` must have exactly asset->m_numGuideStrands entries
+// (the PADDED guide count), one per guide strand in guide order. Call after
+// asset->GenerateFollowHairs() so m_numTotalStrands/m_numGuideStrands are final.
+void FillBoundBoneSkinning(TressFXAsset* asset, const std::vector<TressFXBoneSkinningData>& perGuideSkinning);
 
 } // namespace GhairLoader

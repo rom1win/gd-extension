@@ -98,6 +98,14 @@ public:
     void set_debug_force_fixed_dt(bool enabled);
     bool get_debug_force_fixed_dt() const;
 
+    // B3.2: one-shot at load, prints a BIND CHECK line comparing our C++
+    // HairBinding math (run against the RatBoy body MeshInstance3D resolved
+    // from the scene) to the .tfxbone answer key already loaded for a
+    // .tfx+.tfxbone hair. Diagnostics only -- no effect on simulation/render.
+    // Off by default.
+    void set_debug_bind_check(bool enabled);
+    bool get_debug_bind_check() const;
+
     // Simulation physics properties (exposed to inspector).
     void set_gravity_magnitude(float v); float get_gravity_magnitude() const;
     void set_damping(float v);           float get_damping() const;
@@ -303,7 +311,12 @@ private:
 
     bool m_gate_capture_mode = false;
     bool m_debug_force_fixed_dt = false;
+    bool m_debug_bind_check = false;
     std::atomic<bool> m_rt_gpu_ready{false};
+
+    // B3.2: main-thread-only, runs from load_all_assets() when m_debug_bind_check
+    // is on. See tressfx_character.cpp for details.
+    void run_debug_bind_check(godot::Skeleton3D* default_skeleton);
 
     // A3 NaN watchdog: reports the FIRST non-finite or absurdly large position
     // in the per-tick async readback (and any non-finite bone matrix), then

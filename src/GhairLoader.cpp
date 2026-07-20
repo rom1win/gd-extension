@@ -181,3 +181,25 @@ void GhairLoader::FillUniformBoneSkinning(TressFXAsset* asset) {
     skin.weight[3] = 0.0f;
     asset->m_boneSkinningData.assign(asset->m_numTotalStrands, skin);
 }
+
+void GhairLoader::FillBoundBoneSkinning(TressFXAsset* asset, const std::vector<TressFXBoneSkinningData>& perGuideSkinning) {
+    if (!asset) {
+        return;
+    }
+    const int guideStride = asset->m_numFollowStrandsPerGuide + 1;
+    const int numGuides = asset->m_numGuideStrands;
+    if ((int)perGuideSkinning.size() != numGuides) {
+        warn(nullptr, godot::String("FillBoundBoneSkinning: perGuideSkinning size mismatch (got ") +
+            godot::String::num_int64((int64_t)perGuideSkinning.size()) + godot::String(", expected ") +
+            godot::String::num_int64(numGuides) + godot::String(")"));
+        return;
+    }
+
+    asset->m_boneSkinningData.assign(asset->m_numTotalStrands, TressFXBoneSkinningData{});
+    for (int g = 0; g < numGuides; ++g) {
+        const int base = g * guideStride;
+        for (int f = 0; f < guideStride; ++f) {
+            asset->m_boneSkinningData[base + f] = perGuideSkinning[g];
+        }
+    }
+}

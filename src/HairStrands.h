@@ -12,6 +12,11 @@ class EI_CommandContext;
 class TressFXHairObject;
 class TressFXAsset;
 
+namespace godot {
+class MeshInstance3D;
+class Skeleton3D;
+}
+
 // Godot-side adapter for the sample "HairStrands" glue type.
 // Intentionally minimal for now: it provides the API shape used by TressFX core
 // (PPLL/ShortCut draw paths) and by our future scene-loading loop.
@@ -19,6 +24,11 @@ class HairStrands {
 public:
     // ghairFilePath: non-null/non-empty selects the .ghair loader (GhairLoader.h)
     // instead of the .tfx path; tfxFilePath/tfxboneFilePath are then ignored.
+    // bindBodyMesh (B3.2, MAIN THREAD ONLY): if non-null and the .ghair path is
+    // active, roots are bound to this mesh's skin weights (HairBinding.h)
+    // instead of GhairLoader::FillUniformBoneSkinning's single-bone rig; on
+    // any failure (no Skin resource, no surfaces, ...) falls back to uniform.
+    // Ignored on the .tfx path (which already has its own .tfxbone weights).
     HairStrands(
         EI_Scene* scene,
         const char* tfxFilePath,
@@ -29,7 +39,8 @@ public:
         float tipSeparationFactor,
         float followHairRadius,
         int skinNumber,
-        int renderIndex);
+        int renderIndex,
+        godot::MeshInstance3D* bindBodyMesh = nullptr);
 
     ~HairStrands();
 
@@ -75,6 +86,20 @@ public:
 
     int GetGuideStrandCount() const;
     int GetTotalStrandCount() const;
+
+    // B3.2 debug-only: re-binds this asset's (padded) guide-strand roots
+    // against `body_mesh`/`skeleton` via HairBinding and compares the result
+    // to this asset's ALREADY-LOADED m_boneSkinningData (the .tfxbone answer
+    // key, when this HairStrands is a .tfx+.tfxbone hair) by bone NAME.
+    // Kept here (not in TressFXCharacter) because it needs TressFXAsset/
+    // TressFXBoneSkinningData/the AMD Vector3 type, which this .cpp already
+    // includes safely; tressfx_character.cpp uses `using namespace godot`
+    // and including TressFXAsset.h there would make unqualified `Vector3`
+    // ambiguous against godot::Vector3 (pre-existing bare `Vector3(...)`
+    // calls throughout that file).
+    // Returns false if the asset/bone data isn't loaded or binding fails.
+    bool RunDebugBindCheck(godot::MeshInstance3D* body_mesh, godot::Skeleton3D* skeleton,
+        int& out_num_roots, double& out_top1_pct, double& out_mean_l1, double& out_max_l1) const;
 
     // Packs guide strand vertex positions into a tightly-packed std430-friendly buffer.
     // Layout: vec4 position (xyz used, w=1). Count = guide_strands * vertices_per_strand.

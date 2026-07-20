@@ -33,6 +33,12 @@ public:
         // TressFXCharacter::load_all_assets). Character-relative NodePath,
         // resolved in TressFXHairNode::_ready()/register_to_character().
         String skeleton_node_path;
+        // B3.2: optional MeshInstance3D to bind .ghair roots to (nearest-
+        // triangle + barycentric skin-weight blend, see HairBinding.h)
+        // instead of GhairLoader::FillUniformBoneSkinning's single-bone rig.
+        // Character-relative NodePath, resolved the same way as
+        // skeleton_node_path. Empty = unset, unchanged (uniform) behavior.
+        String bind_body_path;
     };
 
     struct TressFXCollisionMeshDescription {
@@ -90,6 +96,9 @@ public:
     void set_skeleton_node_path(const NodePath &p) { skeleton_node_path = p; }
     NodePath get_skeleton_node_path() const { return skeleton_node_path; }
 
+    void set_bind_body_path(const NodePath &p) { bind_body_path = p; }
+    NodePath get_bind_body_path() const { return bind_body_path; }
+
     // Public API exposed to scripts
     void load_tfx_asset();
     void bind_to_godot_mesh(const NodePath &mesh_node_path);
@@ -109,6 +118,7 @@ private:
     float follow_hair_radius = 0.012f;
     String ghair_file;
     NodePath skeleton_node_path;
+    NodePath bind_body_path;
 
     // node path to target mesh (set via inspector or bind call)
     NodePath target_mesh_path;

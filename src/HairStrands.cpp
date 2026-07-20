@@ -8,9 +8,16 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include <godot_cpp/classes/skeleton3d.hpp>
 
 #include "TressFX/TressFXHairObject.h"
 #include "TressFX/TressFXAsset.h"
@@ -18,6 +25,7 @@
 #include "GodotEngineInterfaceImpl.h"
 #include "GodotTressFXMath.h"
 #include "GhairLoader.h"
+#include "HairBinding.h"
 
 static godot::String bytes_to_hex_prefix(const godot::PackedByteArray& bytes, int64_t max_bytes) {
     static const char* kHex = "0123456789ABCDEF";
@@ -143,7 +151,8 @@ HairStrands::HairStrands(
     float tipSeparationFactor,
     float followHairRadius,
     int skinNumber,
-    int renderIndex)
+    int renderIndex,
+    godot::MeshInstance3D* bindBodyMesh)
     : m_pScene(scene),
       m_skinNumber(skinNumber),
       m_tfxFilePath(tfxFilePath ? tfxFilePath : ""),
@@ -231,8 +240,33 @@ HairStrands::HairStrands(
             }
 
             if (use_ghair) {
-                // No per-strand bone weights in .ghair v1: single-bone test rig.
-                GhairLoader::FillUniformBoneSkinning(m_asset.get());
+                // B3.2: bind roots to a real body mesh's skin weights when the
+                // hair node provides one; otherwise fall back to the .ghair v1
+                // single-bone rigid test rig (unchanged behavior when unset).
+                bool bound = false;
+                if (bindBodyMesh && m_pScene && m_pScene->get_skeleton()) {
+                    const int vps = (int)m_asset->m_numVerticesPerStrand;
+                    const int guideStride = (int)m_asset->m_numFollowStrandsPerGuide + 1;
+                    const int numGuides = (int)m_asset->m_numGuideStrands;
+                    std::vector<Vector3> guideRoots(numGuides);
+                    for (int g = 0; g < numGuides; ++g) {
+                        guideRoots[g] = m_asset->m_positions[(size_t)(g * guideStride) * vps];
+                    }
+                    std::vector<TressFXBoneSkinningData> perGuideSkin;
+                    if (HairBinding::BindRootsToGodotMesh(bindBodyMesh, m_pScene->get_skeleton(), guideRoots, perGuideSkin)) {
+                        GhairLoader::FillBoundBoneSkinning(m_asset.get(), perGuideSkin);
+                        bound = true;
+                        godot::UtilityFunctions::print(
+                            godot::String("HairStrands: .ghair roots bound to body mesh (") +
+                            godot::String::num_int64(numGuides) + godot::String(" guide strands)"));
+                    } else {
+                        godot::UtilityFunctions::push_warning(
+                            "HairStrands: bind_body_path binding failed; falling back to uniform bone skinning");
+                    }
+                }
+                if (!bound) {
+                    GhairLoader::FillUniformBoneSkinning(m_asset.get());
+                }
                 godot::UtilityFunctions::print(
                     godot::String("GhairLoader: loaded '") + godot::String(m_ghairFilePath.c_str()) +
                     godot::String("' strands=") + godot::String::num_int64(ghair_raw_strands) +
@@ -778,4 +812,144 @@ int HairStrands::GetTotalStrandCount() const {
         return 0;
     }
     return (int)m_asset->m_numTotalStrands;
+}
+
+bool HairStrands::RunDebugBindCheck(godot::MeshInstance3D* body_mesh, godot::Skeleton3D* skeleton,
+        int& out_num_roots, double& out_top1_pct, double& out_mean_l1, double& out_max_l1) const {
+    out_num_roots = 0;
+    out_top1_pct = 0.0;
+    out_mean_l1 = 0.0;
+    out_max_l1 = 0.0;
+
+    if (!m_asset || m_asset->m_boneSkinningData.empty() || !body_mesh || !skeleton) {
+        return false;
+    }
+
+    const int vps = (int)m_asset->m_numVerticesPerStrand;
+    const int guideStride = (int)m_asset->m_numFollowStrandsPerGuide + 1;
+    const int numGuides = (int)m_asset->m_numGuideStrands;
+    if (vps <= 0 || numGuides <= 0) {
+        return false;
+    }
+
+    std::vector<Vector3> guideRoots(numGuides);
+    for (int g = 0; g < numGuides; ++g) {
+        guideRoots[g] = m_asset->m_positions[(size_t)(g * guideStride) * vps];
+    }
+
+    std::vector<TressFXBoneSkinningData> ours;
+    std::vector<Vector3> closestPoints;
+    std::vector<float> distances;
+    HairBinding::MeshDiagnosticInfo meshDiag;
+    if (!HairBinding::BindRootsToGodotMesh(body_mesh, skeleton, guideRoots, ours, &closestPoints, &distances, &meshDiag)) {
+        return false;
+    }
+
+    // 2026-07-20 SUSPICIOUS-bind-check diagnostic (top1=0%, meanL1 exactly
+    // 2.0 on every one of 2240 roots reported on RatBoy): print once,
+    // mesh-wide identity info plus two probe roots (0 and 1000), so the
+    // maintainer's next run pins whether this is (a) Skin bind -> skeleton
+    // index mapping producing no resolved weights at all
+    // (resolvedWeightVerts near 0), or (b) a good mapping but wrong mesh/
+    // skeleton-space transform (roots landing far from the real surface, or
+    // near it but on unrelated geometry). Deliberately left in (cheap,
+    // gated by nothing but this function only running when debug_bind_check
+    // is on) until the SUSPICIOUS result is understood.
+    godot::UtilityFunctions::print(
+        godot::String("BIND CHECK DIAG: mesh vertexCount=") + godot::String::num_int64(meshDiag.vertexCount) +
+        godot::String(" resolvedWeightVerts=") + godot::String::num_int64(meshDiag.resolvedWeightVerts) +
+        godot::String(" skinBindCount=") + godot::String::num_int64(meshDiag.skinBindCount) +
+        godot::String(" firstBindNames=[") + godot::String(meshDiag.firstBindNames[0].c_str()) + godot::String(", ") +
+            godot::String(meshDiag.firstBindNames[1].c_str()) + godot::String(", ") +
+            godot::String(meshDiag.firstBindNames[2].c_str()) + godot::String("]") +
+        godot::String(" firstSkeletonBoneNames=[") + godot::String(meshDiag.firstSkeletonBoneNames[0].c_str()) + godot::String(", ") +
+            godot::String(meshDiag.firstSkeletonBoneNames[1].c_str()) + godot::String(", ") +
+            godot::String(meshDiag.firstSkeletonBoneNames[2].c_str()) + godot::String("]"));
+
+    const int32_t bone_count = skeleton->get_bone_count();
+    int top1_matches = 0;
+    double sum_l1 = 0.0;
+    double max_l1 = 0.0;
+
+    for (int g = 0; g < numGuides; ++g) {
+        const TressFXBoneSkinningData& our_skin = ours[g];
+        const TressFXBoneSkinningData& ans_skin = m_asset->m_boneSkinningData[(size_t)(g * guideStride)];
+
+        // Renormalize both to name->weight maps summing to 1 -- matches
+        // tools/bind_hair_prototype.py's comparison convention exactly.
+        std::unordered_map<std::string, float> our_w, ans_w;
+        float our_total = 0.0f, ans_total = 0.0f;
+        for (int k = 0; k < TRESSFX_MAX_INFLUENTIAL_BONE_COUNT; ++k) {
+            if (our_skin.weight[k] > 0.0f) {
+                const int bi = (int)our_skin.boneIndex[k];
+                if (bi >= 0 && bi < bone_count) {
+                    const std::string name(godot::String(skeleton->get_bone_name(bi)).utf8().get_data());
+                    our_w[name] += our_skin.weight[k];
+                    our_total += our_skin.weight[k];
+                }
+            }
+            if (ans_skin.weight[k] > 0.0f) {
+                const int bi = (int)ans_skin.boneIndex[k];
+                if (bi >= 0 && bi < bone_count) {
+                    const std::string name(godot::String(skeleton->get_bone_name(bi)).utf8().get_data());
+                    ans_w[name] += ans_skin.weight[k];
+                    ans_total += ans_skin.weight[k];
+                }
+            }
+        }
+        if (our_total > 0.0f) for (auto& kv : our_w) kv.second /= our_total;
+        if (ans_total > 0.0f) for (auto& kv : ans_w) kv.second /= ans_total;
+
+        std::string our_top1, ans_top1;
+        float our_best = -1.0f, ans_best = -1.0f;
+        for (const auto& kv : our_w) if (kv.second > our_best) { our_best = kv.second; our_top1 = kv.first; }
+        for (const auto& kv : ans_w) if (kv.second > ans_best) { ans_best = kv.second; ans_top1 = kv.first; }
+        if (!our_top1.empty() && our_top1 == ans_top1) {
+            top1_matches++;
+        }
+
+        std::unordered_map<std::string, float> names = our_w;
+        for (const auto& kv : ans_w) names.emplace(kv.first, 0.0f);
+        double l1 = 0.0;
+        for (const auto& kv : names) {
+            const auto our_it = our_w.find(kv.first);
+            const auto ans_it = ans_w.find(kv.first);
+            const float a = (our_it != our_w.end()) ? our_it->second : 0.0f;
+            const float b = (ans_it != ans_w.end()) ? ans_it->second : 0.0f;
+            l1 += std::fabs((double)a - (double)b);
+        }
+        sum_l1 += l1;
+        max_l1 = std::max(max_l1, l1);
+
+        // Probe roots 0 and 1000 (see the mesh-wide diagnostic print above).
+        if (g == 0 || g == 1000) {
+            auto format_raw4 = [&](const TressFXBoneSkinningData& skin) -> godot::String {
+                godot::String s;
+                for (int k = 0; k < TRESSFX_MAX_INFLUENTIAL_BONE_COUNT; ++k) {
+                    const int bi = (int)skin.boneIndex[k];
+                    const godot::String name = (bi >= 0 && bi < bone_count) ? godot::String(skeleton->get_bone_name(bi)) : godot::String("?");
+                    s += godot::String(k == 0 ? "" : ", ") + godot::String("[") + godot::String::num_int64(bi) + godot::String("]") +
+                        name + godot::String("=") + godot::String::num(skin.weight[k], 4);
+                }
+                return s;
+            };
+            const Vector3& rootPos = guideRoots[g];
+            const bool haveGeom = (g < (int)closestPoints.size()) && (g < (int)distances.size());
+            const Vector3 cp = haveGeom ? closestPoints[g] : Vector3();
+            const float dist = haveGeom ? distances[g] : -1.0f;
+            godot::UtilityFunctions::print(
+                godot::String("BIND CHECK DIAG root=") + godot::String::num_int64(g) +
+                godot::String(" pos=(") + godot::String::num(rootPos.x, 4) + godot::String(", ") + godot::String::num(rootPos.y, 4) + godot::String(", ") + godot::String::num(rootPos.z, 4) + godot::String(")") +
+                godot::String(" closest=(") + godot::String::num(cp.x, 4) + godot::String(", ") + godot::String::num(cp.y, 4) + godot::String(", ") + godot::String::num(cp.z, 4) + godot::String(")") +
+                godot::String(" dist=") + godot::String::num(dist, 5));
+            godot::UtilityFunctions::print(godot::String("  OURS:   ") + format_raw4(our_skin));
+            godot::UtilityFunctions::print(godot::String("  ANSWER: ") + format_raw4(ans_skin));
+        }
+    }
+
+    out_num_roots = numGuides;
+    out_top1_pct = 100.0 * (double)top1_matches / (double)std::max(1, numGuides);
+    out_mean_l1 = sum_l1 / (double)std::max(1, numGuides);
+    out_max_l1 = max_l1;
+    return true;
 }
