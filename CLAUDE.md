@@ -368,41 +368,30 @@ heart; the C++ extension around them is the product.
   (2228/2228), mean L1 weight error 0.0001, roots 20 µm from the mesh
   surface. The binding MATH is production-valid; everything below is
   plumbing it into C++.
-  **B3.2 — C++ binding port: IN PROGRESS, CHECK RED, ROOT CAUSE PINNED
-  (2026-07-20, branch `b-blender-pipeline`, WIP commit d5dd32f — do not
-  merge).** New `src/HairBinding.cpp/.h`: `BindRootsToMesh` (port of the
-  Python math, spatial-hash broad phase; deliberately NO `using namespace
-  godot` — AMD's `::Vector3` collides, AMD-type code stays in
-  HairStrands.cpp) + `BindRootsToGodotMesh` (reads a `MeshInstance3D`'s
-  arrays + Skin, maps bind names → skeleton via `find_bone`). Wiring:
-  `bind_body_path` on TressFXHairNode, `debug_bind_check` (bool, default
-  off) on TressFXCharacter → `RunDebugBindCheck()` in HairStrands.cpp runs
-  the C++ binder on RatBoy's own Godot-imported mesh and scores it against
-  the loaded `.tfxbone` (same metrics as the Python gate).
-  Current state: check prints `top1=0.0% meanL1=2.0` — and the 2026-07-20
-  diagnostic run PROVED WHY: **`HairBinding.cpp` reads only
-  `surface_get_arrays(0)`**, but RatBoy's imported ArrayMesh is
-  multi-surface; surface 0 is a 1,146-vertex eye/face part (full body =
-  12,909 verts), so every root snapped to eyeball bones 20–38 cm away.
-  Explicitly RULED OUT by the same diagnostics (don't re-suspect them):
-  bone-name spaces match (bind names == skeleton names), Skin mapping
-  resolves 1146/1146 vertices, slot alignment fine (padding slots duplicate
-  the last real strand).
-  **NEXT STEP (first thing a fresh session should do):** in
-  `BindRootsToGodotMesh`, loop `mesh->get_surface_count()` and concatenate
-  ARRAY_VERTEX/BONES/WEIGHTS/INDEX across surfaces with per-surface vertex
-  index offsets (non-indexed surfaces = consecutive triangle triples; the
-  code already handles that case for surface 0). Rebuild (`scons -Q`), then
-  verify: set `debug_bind_check = true` on TressFXCharacter in
-  `demo/ratboy_node.tscn`, maintainer restarts editor + F5, read the
-  `BIND CHECK` line. Green = top1 ≥ ~95% and meanL1 near 0 (do NOT demand
-  the Python run's exact 100%/0.0001 — that compared against the `.tfxmesh`
-  the answer key was authored on; the Godot-imported mesh differs slightly,
-  so small disagreement is legitimate, not a bug). Then flip the flag OFF
-  (same never-commit-ON convention as `gate_capture_mode`), commit the
-  green state, and verify `FillBoundBoneSkinning` (GhairLoader) is wired so
-  a `.ghair` hair node with `bind_body_path` set actually consumes the
-  bound weights end-to-end (blender_hair_test.tscn is the testbed).
+  **B3.2 — C++ binding port: DONE, GREEN (2026-07-20, commits 312e546 +
+  2b871f7, branch `b-blender-pipeline`).** `src/HairBinding.cpp/.h`:
+  `BindRootsToMesh` (port of the Python math, spatial-hash broad phase;
+  deliberately NO `using namespace godot` — AMD's `::Vector3` collides,
+  AMD-type code stays in HairStrands.cpp) + `BindRootsToGodotMesh` (reads a
+  `MeshInstance3D`'s arrays + Skin, maps bind names → skeleton via
+  `find_bone`, concatenates ALL mesh surfaces with per-surface vertex index
+  offsets and per-surface 4-or-8 bone stride — the earlier surface-0-only
+  read was the sole cause of the red check). Wiring: `bind_body_path` on
+  TressFXHairNode, `debug_bind_check` (bool, default off, never commit ON)
+  on TressFXCharacter → `RunDebugBindCheck()` scores the C++ binder on
+  RatBoy's Godot-imported mesh against the loaded `.tfxbone`.
+  **In-engine BIND CHECK result: roots=2240 top1=100.0% meanL1=0.0001
+  maxL1=0.0034 PASS** — identical to the Python gate despite the
+  Godot-imported mesh (19,588 verts across surfaces) differing from the
+  `.tfxmesh` the answer key was authored on.
+  **End-to-end .ghair consumption VERIFIED (commit 2b871f7):**
+  `demo/blender_hair_test.tscn` now sets `bind_body_path` on Hair_test and
+  `demo/skinned_sphere.gd` (test tool) gives the Emitter sphere real bone
+  weights + a Skin at `_ready()` (safe ordering: asset load is
+  call_deferred, runs after all _ready). F6 console prints
+  `HairStrands: .ghair roots bound to body mesh (384 guide strands)` —
+  bound path taken, no fallback; fallback paths print their own
+  distinguishable lines.
   REMAINING for Phase B after that: Gate B part 2 = maintainer's own rigged
   character (they are building it: rigged, animated, combed groom); editor
   automation (invoke Blender headless from the Godot importer instead of
