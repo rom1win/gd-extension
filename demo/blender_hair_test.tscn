@@ -1,6 +1,7 @@
-[gd_scene load_steps=4 format=3 uid="uid://c3ky4qejun40g"]
+[gd_scene load_steps=5 format=3 uid="uid://c3ky4qejun40g"]
 
 [ext_resource type="Script" uid="uid://c5yw6jrt1ity3" path="res://free_cam.gd" id="1_freecam"]
+[ext_resource type="Script" uid="uid://7foh4cld2rcs" path="res://skinned_sphere.gd" id="2_skinned_sphere"]
 
 [sub_resource type="SphereMesh" id="SphereMesh_emitter"]
 radius = 1.0
@@ -13,6 +14,7 @@ ambient_light_source = 2
 
 [node name="Emitter" type="MeshInstance3D" parent="."]
 mesh = SubResource("SphereMesh_emitter")
+script = ExtResource("2_skinned_sphere")
 
 [node name="Skeleton3D" type="Skeleton3D" parent="."]
 bones/0/name = "root"
@@ -29,6 +31,7 @@ bones/0/scale = Vector3(1, 1, 1)
 ghair_file = "res://Meshes/HairAsset/BlenderTest/hair_test.ghair"
 hair_object_name = "blender_test_hair"
 skeleton_node_path = NodePath("../../Skeleton3D")
+bind_body_path = NodePath("../../Emitter")
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.965926, -0.258819, 0, 0.258819, 0.965926, 0, 0.6, 3.5)

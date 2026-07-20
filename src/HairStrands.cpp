@@ -266,6 +266,7 @@ HairStrands::HairStrands(
                 }
                 if (!bound) {
                     GhairLoader::FillUniformBoneSkinning(m_asset.get());
+                    godot::UtilityFunctions::print("HairStrands: ghair uniform skinning fallback (no bind_body_path bound)");
                 }
                 godot::UtilityFunctions::print(
                     godot::String("GhairLoader: loaded '") + godot::String(m_ghairFilePath.c_str()) +
