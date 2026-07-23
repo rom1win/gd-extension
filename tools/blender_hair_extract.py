@@ -11,7 +11,17 @@ Args after the bare `--` are parsed with argparse:
     --vps      Vertices per strand after resampling. One of 8/16/32/64.
                Default 16.
     --space    "world" (default, apply the object's matrix_world to every
-               point before resampling) or "local" (raw curve-local points).
+               point before resampling), "local" (raw curve-local points),
+               or "armature" (armature-local space of the surface mesh's
+               ARMATURE-modifier object -- USE THIS FOR RIGGED CHARACTERS:
+               it is exactly the Godot-imported Skeleton3D's model space,
+               the space the sim and root binding run in. Requires a
+               meter-scale rig; run tools/prep_mixamo_blend.py first on
+               cm-scale FBX imports).
+
+Extraction always happens in REST pose (armatures are forced to rest before
+evaluation), so a file saved mid-animation still yields the groom as
+authored on the un-posed character.
 
 Reads the EVALUATED object (via the depsgraph) so Geometry Nodes output is
 included, not just the authored control points -- same approach as the B1
@@ -107,8 +117,25 @@ def parse_args():
     p.add_argument("--out", required=True)
     p.add_argument("--object", default=None)
     p.add_argument("--vps", type=int, default=16, choices=VALID_VPS)
-    p.add_argument("--space", choices=("world", "local"), default="world")
+    p.add_argument("--space", choices=("world", "local", "armature"), default="world")
     return p.parse_args(argv)
+
+
+def find_bind_armature(obj):
+    """The armature whose local space becomes Godot's skeleton model space:
+    the ARMATURE-modifier object of the curves' surface mesh (fallback: the
+    file's single armature). Used by --space armature."""
+    surf = getattr(obj.data, "surface", None)
+    if surf is not None:
+        for m in surf.modifiers:
+            if m.type == 'ARMATURE' and m.object is not None:
+                return m.object
+    armatures = [o for o in bpy.data.objects if o.type == 'ARMATURE']
+    if len(armatures) == 1:
+        return armatures[0]
+    raise SystemExit(
+        "[EXTRACT] --space armature: no armature found via the curves' surface "
+        f"mesh, and the file has {len(armatures)} armatures (need exactly 1)")
 
 
 def find_object(name):
@@ -209,6 +236,20 @@ def main():
     args = parse_args()
     obj = find_object(args.object)
 
+    # Always evaluate in REST pose: the binder and the sim consume the groom
+    # as authored on the un-animated character, but files are often saved
+    # posed mid-animation, and a Surface-Deform'ed groom evaluates DEFORMED
+    # at whatever pose is active. Forcing REST here makes extraction
+    # pose-independent (proven on the Mixamo capoeira asset, 2026-07-23).
+    rest_forced = []
+    for ob in bpy.data.objects:
+        if ob.type == 'ARMATURE' and ob.data.pose_position != 'REST':
+            ob.data.pose_position = 'REST'
+            rest_forced.append(ob.name)
+    if rest_forced:
+        bpy.context.view_layer.update()
+        print(f"[EXTRACT] forced REST pose on armature(s): {rest_forced}")
+
     deps = bpy.context.evaluated_depsgraph_get()
     ev = obj.evaluated_get(deps)
     cu = ev.data
@@ -223,7 +264,24 @@ def main():
     test_twist_present = cu.attributes.get("test_twist") is not None
     test_width_present = cu.attributes.get("test_width") is not None
 
-    mat = obj.matrix_world.copy() if args.space == "world" else None
+    bind_armature = None
+    if args.space == "world":
+        mat = obj.matrix_world.copy()
+    elif args.space == "armature":
+        # Godot's skeleton model space -- the space the TressFX sim and root
+        # binding run in -- is the glTF-exported joint space, and Blender's
+        # glTF exporter axis-converts the JOINT DATA itself (measured
+        # 2026-07-23 on the Mixamo asset: glTF joint translation ==
+        # yup_conversion @ armature_local). So the correct .ghair space is
+        # yup(armature-local), NOT raw armature-local. For the sim's
+        # hardcoded -Y gravity to point down the character, the rig must be
+        # meter-scale with an identity armature object transform (run
+        # tools/prep_mixamo_blend.py on FBX imports first).
+        yup = mathutils.Matrix(((1, 0, 0, 0), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))
+        bind_armature = find_bind_armature(obj)
+        mat = yup @ bind_armature.matrix_world.inverted() @ obj.matrix_world
+    else:
+        mat = None
 
     vps = args.vps
     pos_out = []
@@ -279,6 +337,8 @@ def main():
         "skipped_strand_count": skipped,
         "original_point_counts": original_point_counts,
         "matrix_world": [list(row) for row in obj.matrix_world],
+        "rest_pose_forced_on": rest_forced,
+        "bind_armature": bind_armature.name if bind_armature is not None else None,
         "surface_uv_present": surface_uv_per_curve is not None,
         "radius_present": radius_flat is not None,
         "twist_present": twist_per_curve is not None,

@@ -9,3 +9,5 @@
 # toolchain): stored in Git LFS. Only the DLL the manifest points at is
 # force-added (`git add -f`); stale timestamped builds stay ignored.
 demo/bin/*.dll filter=lfs diff=lfs merge=lfs -text
+*.blend binary
+*.ghair binary
