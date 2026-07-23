@@ -17,6 +17,11 @@ class EI_BindSet;
 class EI_CommandContext;
 class TressFXHairObject;
 
+namespace godot {
+class MeshInstance3D;
+class Skeleton3D;
+}
+
 // Godot-side adapter for the sample "CollisionMesh" glue type.
 // A3.2 subtask 1: CPU parsing of the AMD .tfxmesh text format (see
 // thirdparty/tressfx/src/TressFX/TressFXBoneSkinning.cpp
@@ -25,6 +30,12 @@ class TressFXHairObject;
 // A3.2 subtask 2 added the bone-skinning kernel (UpdateSkinning) so the mesh
 // follows the skeleton; SDF generation/marching-cubes/collision response are
 // still not wired up (later subtasks).
+// Phase B follow-up: `bodyMesh` non-null selects HairBinding::
+// ReadGodotSkinnedMesh (a from-Godot-mesh loader, same concatenated-surfaces
+// reader the hair root-binding path uses) instead of parsing tfxmeshFilePath
+// -- everything downstream (GPU upload, skinning, SDF build, hair collision)
+// consumes only m_positions/m_normals/m_boneData/m_indices either way, so
+// nothing else changes.
 class CollisionMesh {
 public:
     CollisionMesh(
@@ -36,7 +47,8 @@ public:
         float SDFCollMargin,
         int skinNumber,
         const char* followBone,
-        int sdfPaddingCells = 40);
+        int sdfPaddingCells = 40,
+        godot::MeshInstance3D* bodyMesh = nullptr);
 
     ~CollisionMesh();
 
@@ -178,6 +190,17 @@ private:
     // res:// aware) and resolves bone names through m_pScene, same mechanism
     // HairStrands uses for .tfxbone names.
     bool LoadTfxMesh();
+
+    // MAIN thread, CPU-only: fills the same five members LoadTfxMesh() does,
+    // reading a Godot MeshInstance3D+Skeleton3D via HairBinding::
+    // ReadGodotSkinnedMesh instead of the .tfxmesh text format. Vertices/
+    // normals arrive already in skeleton model space (same space .tfxmesh
+    // data is in -- see HairBinding.cpp's MeshLocalToSkeletonModelSpace);
+    // bone indices are already skeleton bone indices (same convention
+    // GetBoneIdByName produces). Returns false (members left however the
+    // reader left them) if body_mesh/skeleton are null or the reader itself
+    // fails (see ReadGodotSkinnedMesh's own failure conditions).
+    bool LoadFromGodotMesh(godot::MeshInstance3D* body_mesh, godot::Skeleton3D* skeleton);
 
     // Stored for debugging and future implementation work.
     EI_Scene* m_pScene = nullptr;

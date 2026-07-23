@@ -107,4 +107,31 @@ bool BindRootsToGodotMesh(
     std::vector<float>* outDistances = nullptr,
     MeshDiagnosticInfo* outMeshDiag = nullptr);
 
+// Shared Godot-mesh reader, factored out of BindRootsToGodotMesh so other
+// consumers (SDF.cpp's from-Godot-mesh collision loader) can read the same
+// concatenated-surfaces vertex/bone/triangle data without re-deriving the
+// Skin-bind-name-to-skeleton-index and per-surface 4-or-8-weight-stride
+// logic. Identical surface loop/warnings as BindRootsToGodotMesh; adds
+// ARRAY_NORMAL, concatenated the same way as ARRAY_VERTEX and transformed by
+// the mesh->skeleton transform's BASIS (direction only, then normalized). A
+// surface with no usable ARRAY_NORMAL contributes zero-vector normals for
+// its vertices and prints a one-time warning -- callers that don't need
+// normals (BindRootsToGodotMesh itself) can simply ignore outNormals.
+//
+// MAIN THREAD ONLY: touches MeshInstance3D/Skeleton3D/Skin.
+//
+// Returns false (outputs left in whatever partial state the failing check
+// left them) under the same conditions BindRootsToGodotMesh documents: null
+// body_mesh/skeleton, no surfaces, no Skin resource, no vertices with any
+// resolved bone weight on any surface, or no usable triangles.
+bool ReadGodotSkinnedMesh(
+    godot::MeshInstance3D* body_mesh,
+    godot::Skeleton3D* skeleton,
+    std::vector<Vector3>& outVerts,
+    std::vector<Vector3>& outNormals,
+    std::vector<std::array<int, 4>>& outBoneIndices4,
+    std::vector<std::array<float, 4>>& outBoneWeights4,
+    std::vector<std::array<int, 3>>& outTriangles,
+    MeshDiagnosticInfo* outMeshDiag = nullptr);
+
 } // namespace HairBinding

@@ -298,13 +298,14 @@ godot::Transform3D MeshLocalToSkeletonModelSpace(godot::MeshInstance3D* body_mes
 
 } // namespace
 
-bool HairBinding::BindRootsToGodotMesh(
+bool HairBinding::ReadGodotSkinnedMesh(
     godot::MeshInstance3D* body_mesh,
     godot::Skeleton3D* skeleton,
-    const std::vector<Vector3>& rootPositionsSkeletonSpace,
-    std::vector<TressFXBoneSkinningData>& outSkinningData,
-    std::vector<Vector3>* outClosestPoints,
-    std::vector<float>* outDistances,
+    std::vector<Vector3>& outVerts,
+    std::vector<Vector3>& outNormals,
+    std::vector<std::array<int, 4>>& outBoneIndices4,
+    std::vector<std::array<float, 4>>& outBoneWeights4,
+    std::vector<std::array<int, 3>>& outTriangles,
     MeshDiagnosticInfo* outMeshDiag) {
     // Deliberately NOT `using namespace godot;` here: this file constructs the
     // global (AMD) ::Vector3 by its bare name throughout -- a using-directive
@@ -370,12 +371,14 @@ bool HairBinding::BindRootsToGodotMesh(
     // just surface 0, or roots snap to whichever surface happened to load
     // first). Each surface's indices are offset by the vertex count
     // accumulated so far.
-    std::vector<Vector3> meshVerts;
-    std::vector<std::array<int, 4>> boneIndices4;
-    std::vector<std::array<float, 4>> boneWeights4;
-    std::vector<std::array<int, 3>> triangles;
+    outVerts.clear();
+    outNormals.clear();
+    outBoneIndices4.clear();
+    outBoneWeights4.clear();
+    outTriangles.clear();
     int resolvedWeightVerts = 0;
     static bool warned_eight = false;
+    static bool warned_missing_normals = false;
 
     for (int32_t si = 0; si < surfaceCount; ++si) {
         const godot::Array arrays = mesh->surface_get_arrays(si);
@@ -386,6 +389,7 @@ bool HairBinding::BindRootsToGodotMesh(
         const godot::PackedInt32Array indices = arrays[godot::Mesh::ARRAY_INDEX];
         const godot::Variant bones_v = arrays[godot::Mesh::ARRAY_BONES];
         const godot::Variant weights_v = arrays[godot::Mesh::ARRAY_WEIGHTS];
+        const godot::Variant normals_v = arrays[godot::Mesh::ARRAY_NORMAL];
         const int64_t svcount = verts.size();
         if (svcount == 0 || bones_v.get_type() != godot::Variant::PACKED_INT32_ARRAY ||
             weights_v.get_type() != godot::Variant::PACKED_FLOAT32_ARRAY) {
@@ -393,6 +397,16 @@ bool HairBinding::BindRootsToGodotMesh(
         }
         const godot::PackedInt32Array bones = bones_v;
         const godot::PackedFloat32Array weights = weights_v;
+        godot::PackedVector3Array normals;
+        bool hasNormals = (normals_v.get_type() == godot::Variant::PACKED_VECTOR3_ARRAY);
+        if (hasNormals) {
+            normals = normals_v;
+            hasNormals = (normals.size() == svcount);
+        }
+        if (!hasNormals && !warned_missing_normals) {
+            warned_missing_normals = true;
+            godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh has a surface with no (or mismatched) ARRAY_NORMAL; affected vertices get a zero normal");
+        }
 
         const int64_t influences = bones.size() / svcount;
         if (influences != 4 && influences != 8) {
@@ -406,14 +420,22 @@ bool HairBinding::BindRootsToGodotMesh(
             godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh uses 8-bone weights; using first 4 influences (renormalized)");
         }
 
-        const int64_t vertexOffset = (int64_t)meshVerts.size();
-        meshVerts.reserve(meshVerts.size() + svcount);
-        boneIndices4.reserve(boneIndices4.size() + svcount);
-        boneWeights4.reserve(boneWeights4.size() + svcount);
+        const int64_t vertexOffset = (int64_t)outVerts.size();
+        outVerts.reserve(outVerts.size() + svcount);
+        outNormals.reserve(outNormals.size() + svcount);
+        outBoneIndices4.reserve(outBoneIndices4.size() + svcount);
+        outBoneWeights4.reserve(outBoneWeights4.size() + svcount);
 
         for (int64_t vi = 0; vi < svcount; ++vi) {
             const godot::Vector3 gp = toSkeletonSpace.xform(verts[vi]);
-            meshVerts.push_back(Vector3(gp.x, gp.y, gp.z));
+            outVerts.push_back(Vector3(gp.x, gp.y, gp.z));
+
+            if (hasNormals) {
+                const godot::Vector3 gn = toSkeletonSpace.basis.xform(normals[vi]).normalized();
+                outNormals.push_back(Vector3(gn.x, gn.y, gn.z));
+            } else {
+                outNormals.push_back(Vector3(0.0f, 0.0f, 0.0f));
+            }
 
             std::array<int, 4> bi{ -1, -1, -1, -1 };
             std::array<float, 4> bw{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -429,17 +451,17 @@ bool HairBinding::BindRootsToGodotMesh(
                 bw[k] = (skelIdx >= 0) ? w : 0.0f;
                 if (skelIdx >= 0) anyResolved = true;
             }
-            boneIndices4.push_back(bi);
-            boneWeights4.push_back(bw);
+            outBoneIndices4.push_back(bi);
+            outBoneWeights4.push_back(bw);
             if (anyResolved) ++resolvedWeightVerts;
         }
 
         if (indices.size() >= 3) {
-            const size_t base = triangles.size();
+            const size_t base = outTriangles.size();
             const size_t triCount = (size_t)indices.size() / 3;
-            triangles.resize(base + triCount);
+            outTriangles.resize(base + triCount);
             for (size_t ti = 0; ti < triCount; ++ti) {
-                triangles[base + ti] = {
+                outTriangles[base + ti] = {
                     (int)(indices[(int)ti * 3 + 0] + vertexOffset),
                     (int)(indices[(int)ti * 3 + 1] + vertexOffset),
                     (int)(indices[(int)ti * 3 + 2] + vertexOffset)
@@ -447,11 +469,11 @@ bool HairBinding::BindRootsToGodotMesh(
             }
         } else if (svcount >= 3) {
             // Non-indexed surface: vertices are already grouped in triangle triples.
-            const size_t base = triangles.size();
+            const size_t base = outTriangles.size();
             const size_t triCount = (size_t)svcount / 3;
-            triangles.resize(base + triCount);
+            outTriangles.resize(base + triCount);
             for (size_t ti = 0; ti < triCount; ++ti) {
-                triangles[base + ti] = {
+                outTriangles[base + ti] = {
                     (int)(ti * 3 + 0 + vertexOffset),
                     (int)(ti * 3 + 1 + vertexOffset),
                     (int)(ti * 3 + 2 + vertexOffset)
@@ -461,16 +483,37 @@ bool HairBinding::BindRootsToGodotMesh(
     }
 
     if (outMeshDiag) {
-        outMeshDiag->vertexCount = (int)meshVerts.size();
+        outMeshDiag->vertexCount = (int)outVerts.size();
         outMeshDiag->resolvedWeightVerts = resolvedWeightVerts;
     }
 
-    if (meshVerts.empty()) {
+    if (outVerts.empty()) {
         godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh has no bone weights on any surface (not a skinned mesh?)");
         return false;
     }
-    if (triangles.empty()) {
+    if (outTriangles.empty()) {
         godot::UtilityFunctions::push_warning("HairBinding: bind_body_path mesh has no usable triangles");
+        return false;
+    }
+
+    return true;
+}
+
+bool HairBinding::BindRootsToGodotMesh(
+    godot::MeshInstance3D* body_mesh,
+    godot::Skeleton3D* skeleton,
+    const std::vector<Vector3>& rootPositionsSkeletonSpace,
+    std::vector<TressFXBoneSkinningData>& outSkinningData,
+    std::vector<Vector3>* outClosestPoints,
+    std::vector<float>* outDistances,
+    MeshDiagnosticInfo* outMeshDiag) {
+    std::vector<Vector3> meshVerts;
+    std::vector<Vector3> meshNormals; // unused by this caller; BindRootsToMesh doesn't use normals either
+    std::vector<std::array<int, 4>> boneIndices4;
+    std::vector<std::array<float, 4>> boneWeights4;
+    std::vector<std::array<int, 3>> triangles;
+
+    if (!ReadGodotSkinnedMesh(body_mesh, skeleton, meshVerts, meshNormals, boneIndices4, boneWeights4, triangles, outMeshDiag)) {
         return false;
     }
 

@@ -3,9 +3,12 @@
 #include "EngineInterface.h" // EI_Device, EI_Resource, EI_CommandContext, EI_BF_*, EI_Scene, GetDevice()
 #include "TressFXLayouts.h"  // GetBoneSkinningMeshLayout() (still-compiled vendored layout table)
 #include "TressFX/TressFXHairObject.h" // TressFXHairObject, TressFXDynamicState::GetApplySDFBindSet()
+#include "HairBinding.h"     // HairBinding::ReadGodotSkinnedMesh (from-Godot-mesh loader)
 
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/skeleton3d.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -142,7 +145,8 @@ CollisionMesh::CollisionMesh(
     float SDFCollMargin,
     int skinNumber,
     const char* followBone,
-    int sdfPaddingCells)
+    int sdfPaddingCells,
+    godot::MeshInstance3D* bodyMesh)
     : m_pScene(scene),
       m_name(name ? name : ""),
       m_tfxmeshFilePath(tfxmeshFilePath ? tfxmeshFilePath : ""),
@@ -160,10 +164,29 @@ CollisionMesh::CollisionMesh(
             godot::String("' cells=") + godot::String::num_int64(m_numCellsInXAxis) +
             godot::String(" margin=") + godot::String::num(m_SDFCollMargin, 3));
 
-    if (!LoadTfxMesh()) {
-        godot::UtilityFunctions::push_warning(
-                godot::String("CollisionMesh: failed to load '") + godot::String(m_tfxmeshFilePath.c_str()) +
-                godot::String("' -- collision mesh disabled, character keeps running without it"));
+    bool loaded = false;
+    if (bodyMesh) {
+        // Phase B follow-up: body_mesh_path set on the TressFXCollisionNode --
+        // read the live Godot mesh instead of a .tfxmesh file.
+        loaded = LoadFromGodotMesh(bodyMesh, m_pScene ? m_pScene->get_skeleton() : nullptr);
+        if (loaded) {
+            godot::UtilityFunctions::print(
+                    godot::String("CollisionMesh: built from Godot mesh '") + bodyMesh->get_name() +
+                    godot::String("' verts=") + godot::String::num_int64(m_numVertices) +
+                    godot::String(" tris=") + godot::String::num_int64(m_numTriangles));
+        } else {
+            godot::UtilityFunctions::push_warning(
+                    "CollisionMesh: failed to build from Godot mesh (body_mesh_path) -- collision mesh disabled, character keeps running without it");
+        }
+    } else {
+        loaded = LoadTfxMesh();
+        if (!loaded) {
+            godot::UtilityFunctions::push_warning(
+                    godot::String("CollisionMesh: failed to load '") + godot::String(m_tfxmeshFilePath.c_str()) +
+                    godot::String("' -- collision mesh disabled, character keeps running without it"));
+        }
+    }
+    if (!loaded) {
         m_valid = false;
         return;
     }
@@ -307,6 +330,82 @@ bool CollisionMesh::LoadTfxMesh() {
 
     m_numVertices = numOfVertices;
     m_numTriangles = numOfTriangles;
+
+    m_aabbMin = m_positions[0];
+    m_aabbMax = m_positions[0];
+    for (const godot::Vector3& p : m_positions) {
+        m_aabbMin.x = std::min(m_aabbMin.x, p.x);
+        m_aabbMin.y = std::min(m_aabbMin.y, p.y);
+        m_aabbMin.z = std::min(m_aabbMin.z, p.z);
+        m_aabbMax.x = std::max(m_aabbMax.x, p.x);
+        m_aabbMax.y = std::max(m_aabbMax.y, p.y);
+        m_aabbMax.z = std::max(m_aabbMax.z, p.z);
+    }
+
+    return true;
+}
+
+bool CollisionMesh::LoadFromGodotMesh(godot::MeshInstance3D* body_mesh, godot::Skeleton3D* skeleton) {
+    if (!body_mesh || !skeleton) {
+        godot::UtilityFunctions::push_warning("CollisionMesh: LoadFromGodotMesh: body_mesh_path resolved but skeleton is null");
+        return false;
+    }
+
+    std::vector<Vector3> verts;  // HairBinding's ::Vector3 (thirdparty/tressfx Math/Vector3D.h), NOT godot::Vector3
+    std::vector<Vector3> normals;
+    std::vector<std::array<int, 4>> boneIndices4;
+    std::vector<std::array<float, 4>> boneWeights4;
+    std::vector<std::array<int, 3>> triangles;
+
+    if (!HairBinding::ReadGodotSkinnedMesh(body_mesh, skeleton, verts, normals, boneIndices4, boneWeights4, triangles)) {
+        return false;
+    }
+
+    const int numOfVertices = (int)verts.size();
+    const int numOfTriangles = (int)triangles.size();
+
+    m_positions.assign(numOfVertices, godot::Vector3());
+    m_normals.assign(numOfVertices, godot::Vector3());
+    m_boneData.assign(numOfVertices, VertexBoneData());
+    for (int i = 0; i < numOfVertices; ++i) {
+        m_positions[i] = godot::Vector3(verts[i].x, verts[i].y, verts[i].z);
+        m_normals[i] = godot::Vector3(normals[i].x, normals[i].y, normals[i].z);
+
+        VertexBoneData& bd = m_boneData[i];
+        for (int k = 0; k < 4; ++k) {
+            // ReadGodotSkinnedMesh marks an unresolved influence with index<0
+            // and weight 0 -- same "unresolved -> bone 0, weight 0" fallback
+            // LoadTfxMesh's engineBoneIdx default uses.
+            const int bidx = boneIndices4[i][k];
+            bd.boneIndex[k] = (float)(bidx >= 0 ? bidx : 0);
+            bd.weight[k] = boneWeights4[i][k];
+        }
+    }
+
+    // Winding flip (i0,i2,i1 instead of i0,i1,i2): the SDF sign convention
+    // comes from triangle winding -- ConstructSignedDistanceField.comp.glsl's
+    // SignedDistancePointToTriangle uses nTri = cross(x1-x0, x2-x0) and flips
+    // the unsigned distance negative when the query point is behind that
+    // normal. The kernel was proven against .tfxmesh data; Godot's imported
+    // mesh front-face winding is the OPPOSITE of .tfxmesh's, so left
+    // un-flipped here the whole field comes out inside-out (hair gets pulled
+    // INTO the body instead of pushed out). HairBinding::ReadGodotSkinnedMesh
+    // itself stays winding-agnostic (nearest-triangle + barycentric only) --
+    // this flip is local to the SDF loader on purpose.
+    m_indices.assign((size_t)numOfTriangles * 3, 0);
+    for (int t = 0; t < numOfTriangles; ++t) {
+        m_indices[(size_t)t * 3 + 0] = triangles[t][0];
+        m_indices[(size_t)t * 3 + 1] = triangles[t][2];
+        m_indices[(size_t)t * 3 + 2] = triangles[t][1];
+    }
+
+    if (m_positions.empty() || m_indices.empty()) {
+        return false;
+    }
+
+    m_numVertices = numOfVertices;
+    m_numTriangles = numOfTriangles;
+    m_numBonesInFile = skeleton->get_bone_count(); // informational only (see the ctor's "loaded" print)
 
     m_aabbMin = m_positions[0];
     m_aabbMax = m_positions[0];

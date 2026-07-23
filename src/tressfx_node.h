@@ -56,6 +56,12 @@ public:
         // 40 matches AMD's own derivation (0.8 * numCellsInXAxis) at the
         // scene's default numCellsInXAxis=50, so this default is a no-op.
         int sdf_padding_cells = 40;
+        // Phase B follow-up: optional MeshInstance3D to build the collision
+        // mesh from directly (HairBinding::ReadGodotSkinnedMesh) instead of
+        // parsing tfx_mesh_file. Character-relative NodePath (string),
+        // resolved the same way as bind_body_path on TressFXObjectDescription.
+        // Empty = unset, unchanged (.tfxmesh) behavior.
+        String body_mesh_path;
     };
 
 protected:

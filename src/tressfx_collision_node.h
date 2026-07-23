@@ -49,6 +49,12 @@ public:
     void set_skeleton_node_path(const NodePath &p);
     NodePath get_skeleton_node_path() const { return skeleton_node_path; }
 
+    // Phase B follow-up: MeshInstance3D to build the collision mesh from
+    // directly (see TressFXCollisionMeshDescription::body_mesh_path). Empty =
+    // unset (falls back to tfx_mesh_file).
+    void set_body_mesh_path(const NodePath &p) { body_mesh_path = p; }
+    NodePath get_body_mesh_path() const { return body_mesh_path; }
+
     // Dynamic property list support so the inspector can show a bone dropdown
     void _get_property_list(List<PropertyInfo> *p_list) const;
     bool _set(const StringName &p_name, const Variant &p_value);
@@ -70,6 +76,7 @@ private:
     int mesh = 0;
     String followBone;
     NodePath skeleton_node_path;
+    NodePath body_mesh_path;
     int sdf_padding_cells = 40;
     bool show_sdf_debug = false;
 

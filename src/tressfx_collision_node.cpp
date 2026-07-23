@@ -7,6 +7,7 @@
 #include <godot_cpp/variant/array.hpp>
 #include <vector>
 #include <godot_cpp/classes/skeleton3d.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include "tressfx_character.h"
 
@@ -35,6 +36,9 @@ void TressFXCollisionNode::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_skeleton_node_path", "p"), &TressFXCollisionNode::set_skeleton_node_path);
     ClassDB::bind_method(D_METHOD("get_skeleton_node_path"), &TressFXCollisionNode::get_skeleton_node_path);
 
+    ClassDB::bind_method(D_METHOD("set_body_mesh_path", "p"), &TressFXCollisionNode::set_body_mesh_path);
+    ClassDB::bind_method(D_METHOD("get_body_mesh_path"), &TressFXCollisionNode::get_body_mesh_path);
+
     ClassDB::bind_method(D_METHOD("set_sdf_padding_cells", "p"), &TressFXCollisionNode::set_sdf_padding_cells);
     ClassDB::bind_method(D_METHOD("get_sdf_padding_cells"), &TressFXCollisionNode::get_sdf_padding_cells);
 
@@ -43,6 +47,8 @@ void TressFXCollisionNode::_bind_methods() {
 
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "tfx_mesh_file", PROPERTY_HINT_FILE, "*.tfxmesh"), "set_tfx_mesh_file", "get_tfx_mesh_file");
     ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "skeleton_node_path"), "set_skeleton_node_path", "get_skeleton_node_path");
+    // Phase B follow-up: MeshInstance3D to build the collision mesh from directly (empty = unset, falls back to tfx_mesh_file).
+    ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "body_mesh_path"), "set_body_mesh_path", "get_body_mesh_path");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "numCellsInXAxis"), "set_num_cells_in_x", "get_num_cells_in_x");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collisionMargin"), "set_collision_margin", "get_collision_margin");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "mesh"), "set_mesh", "get_mesh");
@@ -111,11 +117,24 @@ void TressFXCollisionNode::_ready() {
                 UtilityFunctions::print("TressFXCollisionNode: skeleton_node_path not set (collision will use character default skeleton if any)");
             }
 
-            // Only register if the mesh file is set
-            if (!last_collision_description.tfx_mesh_file.is_empty()) {
+            // Resolve the body-mesh target the same way (character-relative),
+            // mirroring TressFXHairNode::bind_body_path.
+            last_collision_description.body_mesh_path = String();
+            if (!body_mesh_path.is_empty()) {
+                Node *bn = get_node_or_null(body_mesh_path);
+                MeshInstance3D *bm = Object::cast_to<MeshInstance3D>(bn);
+                if (bm) {
+                    last_collision_description.body_mesh_path = String(character->get_path_to(bm));
+                } else {
+                    UtilityFunctions::push_warning(String("TressFXCollisionNode: body_mesh_path set but is not a MeshInstance3D: ") + String(body_mesh_path));
+                }
+            }
+
+            // Only register if a mesh source (file or Godot mesh) is set
+            if (!last_collision_description.tfx_mesh_file.is_empty() || !last_collision_description.body_mesh_path.is_empty()) {
                 character->register_collision_description(last_collision_description, this);
             } else {
-                UtilityFunctions::print(String("TressFXCollisionNode: tfx_mesh_file empty; skipping registration."));
+                UtilityFunctions::print(String("TressFXCollisionNode: tfx_mesh_file/body_mesh_path both empty; skipping registration."));
             }
             break;
         }
@@ -172,8 +191,9 @@ void TressFXCollisionNode::load_tfx_collision_asset() {
     last_collision_description.mesh = mesh;
     last_collision_description.followBone = followBone;
     last_collision_description.sdf_padding_cells = sdf_padding_cells;
-    // Keep this as node-relative; register_to_character will rewrite to character-relative.
+    // Keep these as node-relative; register_to_character will rewrite to character-relative.
     last_collision_description.skeleton_node_path = String(skeleton_node_path);
+    last_collision_description.body_mesh_path = String(body_mesh_path);
 
     UtilityFunctions::print(String("TressFXCollisionNode: created collision description: ") + last_collision_description.tfx_mesh_file);
 }
@@ -197,10 +217,19 @@ void TressFXCollisionNode::register_to_character(TressFXCharacter *character) {
         } else {
             UtilityFunctions::print("TressFXCollisionNode: register_to_character skeleton_node_path not set");
         }
-        if (!last_collision_description.tfx_mesh_file.is_empty()) {
+        if (!body_mesh_path.is_empty()) {
+            Node *bn = get_node_or_null(body_mesh_path);
+            MeshInstance3D *bm = Object::cast_to<MeshInstance3D>(bn);
+            if (bm) {
+                last_collision_description.body_mesh_path = String(character->get_path_to(bm));
+            } else {
+                UtilityFunctions::push_warning(String("TressFXCollisionNode: body_mesh_path set but is not a MeshInstance3D: ") + String(body_mesh_path));
+            }
+        }
+        if (!last_collision_description.tfx_mesh_file.is_empty() || !last_collision_description.body_mesh_path.is_empty()) {
             character->register_collision_description(last_collision_description, this);
         } else {
-            UtilityFunctions::print(String("TressFXCollisionNode::register_to_character: tfx_mesh_file empty; skipping registration."));
+            UtilityFunctions::print(String("TressFXCollisionNode::register_to_character: tfx_mesh_file/body_mesh_path both empty; skipping registration."));
         }
     }
 }

@@ -419,6 +419,50 @@ heart; the C++ extension around them is the product.
     Mixamo bodies): add a second non-overlapping UV map (Smart UV Project)
     used only for hair attachment; original texture UVs untouched. UVs
     never reach Godot (binding is positional).
+  **From-Godot-mesh SDF collision: DONE (2026-07-23/24, maintainer-verified
+  hair-on-body draping in capoeira_test.tscn).** `body_mesh_path` (NodePath
+  to any skinned MeshInstance3D) on TressFXCollisionNode is the alternative
+  to `tfx_mesh_file` — last AMD-format dependency gone for Blender
+  characters. Implementation: `HairBinding::ReadGodotSkinnedMesh` (factored
+  out of the binder, + normals) feeds `CollisionMesh::LoadFromGodotMesh`
+  (src/SDF.cpp), same five arrays the .tfxmesh parser fills; downstream
+  GPU path untouched; RatBoy path untouched. Hard-won lessons:
+  - **Winding**: the SDF sign convention comes from triangle winding
+    (ConstructSignedDistanceField.comp.glsl `SignedDistancePointToTriangle`,
+    `nTri = cross(x1-x0,x2-x0)`); Godot meshes wind OPPOSITE to .tfxmesh —
+    without the flip in LoadFromGodotMesh (emit i0,i2,i1) the field
+    inverts and collision SUCKS HAIR INTO THE BODY. Diagnose via
+    `SDF CHECK`: healthy = small `inside` count with negative `min`.
+  - **collisionMargin defaults to 0.0 in C++** (RatBoy's scene sets 0.1) —
+    margin 0 makes SDF collision nearly ineffective (hair drifts through;
+    only strictly-interior vertices react). Always set it; capoeira uses
+    0.08. Free knob (UBO float), unlike cells.
+  - **Humanoid grid sizing**: `numCellsInXAxis` spans the mesh's X extent;
+    a T-pose human's arm span (1.9 m) gave 6 cm cells at RatBoy's 32 —
+    holes everywhere. capoeira: 72 cells + padding 6 = 2.5 cm, 237k cells
+    (~RatBoy budget). The REAL answer for production: author a low-poly
+    scalp/torso PROXY mesh skinned to the rig and point body_mesh_path at
+    it — grid budget then concentrates where hair lives.
+  - Groom authoring convention (docs, Phase C): the groom is the strand's
+    REST SHAPE — shape constraints pull toward it and the pinned root
+    SEGMENT (verts 0+1, AMD design, length = strandLen/(vps-1)) emits in
+    its authored direction. Comb hair into its intended rest style;
+    uncombed = normal-direction "candle wick" roots. Higher --vps shortens
+    the visible stub (capoeira re-extracted at 32).
+  - `gravity_magnitude` is a real m/s² acceleration: 9.8 = physical for
+    long free hair (Inspector hint widened 0-20; default stays 0.09 =
+    RatBoy's tuned value — do NOT change the default, baseline depends on
+    it).
+  - `demo/fps_counter.gd` (CanvasLayer test tool, drop on any scene): live
+    FPS + 10 s console averages — closes the "FPS baseline logging"
+    follow-up. First recorded numbers (Intel iGPU, capoeira, 2112 strands):
+    ~45 avg @ vps16+SDF72; ~20-35 with vps32 + show_sdf_debug on (the
+    voxel ghost's ~1 s full-grid readback causes periodic hitches — turn it
+    OFF for measurements; suspected but not yet re-measured clean).
+  - capoeira_test.tscn ships as the maintainer's live tuning playground
+    (zero stiffness, gravity 9.8, 32 follow hairs, margin 0.08) — its
+    values are EXPERIMENTS, not calibrated defaults.
+  - `*.blend` now stored via Git LFS (renormalized 2026-07-24).
   REMAINING for Phase B: `.tfx` parser keep-or-remove is now the
   maintainer's call (gate condition met); editor automation (invoke
   Blender headless from the Godot importer instead of manual CLI); hide
@@ -427,7 +471,9 @@ heart; the C++ extension around them is the product.
   feathers; per-hair-node sim params (H6 — capoeira hair reads "a little
   rigid" on RatBoy-tuned per-character defaults: `global_stiffness` 0.408 /
   `local_stiffness` 0.908 / `damping` 0.068 on TressFXCharacter are the
-  knobs). Housekeeping: `test_assets/hair_test_extracted.json` is an
+  knobs); 8-weight meshes: ReadGodotSkinnedMesh keeps the first 4 raw
+  weights without renormalizing (dormant — all current assets are
+  4-weight; fix when an 8-weight asset appears). Housekeeping: `test_assets/hair_test_extracted.json` is an
   untracked prototype artifact (ignore or delete freely); main is 3 commits
   ahead of origin and `b-blender-pipeline` is entirely unpushed — push only
   when the maintainer asks.

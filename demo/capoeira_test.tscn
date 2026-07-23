@@ -1,24 +1,39 @@
-[gd_scene load_steps=5 format=3 uid="uid://urdwjjgv1k76"]
+[gd_scene load_steps=6 format=3 uid="uid://urdwjjgv1k76"]
 
 [ext_resource type="Script" uid="uid://c5yw6jrt1ity3" path="res://free_cam.gd" id="1_freecam"]
 [ext_resource type="Script" uid="uid://bva8r1burpnk1" path="res://capoeira_test.gd" id="2_capo_test"]
 [ext_resource type="PackedScene" uid="uid://bnq63ck2acinf" path="res://Meshes/capoiera_prep.blend" id="3_capo_blend"]
+[ext_resource type="Script" uid="uid://bipjhccji80mj" path="res://fps_counter.gd" id="4_fps"]
 
 [sub_resource type="Environment" id="Environment_test"]
 ambient_light_source = 2
 
 [node name="CapoeiraTest" type="Node3D"]
 script = ExtResource("2_capo_test")
+animate = false
 
 [node name="capoiera_prep" parent="." instance=ExtResource("3_capo_blend")]
 
 [node name="TressFXCharacter" type="TressFXCharacter" parent="."]
+gravity_magnitude = 9.8
+global_stiffness = 0.0
+local_stiffness = 0.0
+sdf_collision_enabled = true
 
 [node name="Hair_capoeira" type="TressFXHairNode" parent="TressFXCharacter"]
 ghair_file = "res://Meshes/HairAsset/Capoeira/capoeira.ghair"
 hair_object_name = "capoeira_hair"
+num_follow_hairs = 32
 skeleton_node_path = NodePath("../../capoiera_prep/Armature/Skeleton3D")
 bind_body_path = NodePath("../../capoiera_prep/Armature/Skeleton3D/Beta_Surface")
+
+[node name="Collision_body" type="TressFXCollisionNode" parent="TressFXCharacter"]
+skeleton_node_path = NodePath("../../capoiera_prep/Armature/Skeleton3D")
+body_mesh_path = NodePath("../../capoiera_prep/Armature/Skeleton3D/Beta_Surface")
+numCellsInXAxis = 72
+collisionMargin = 0.08
+sdf_padding_cells = 6
+followBone = "mixamorig:Hips"
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.75, 1.4)
@@ -26,10 +41,19 @@ current = true
 script = ExtResource("1_freecam")
 
 [node name="OmniLight3D" type="OmniLight3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 2.5, 2)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 2.5, 0.0845313)
+light_energy = 3.0
+shadow_enabled = true
+omni_range = 12.0
+
+[node name="OmniLight3D2" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.88037, 2.5, 0.0845313)
 light_energy = 3.0
 shadow_enabled = true
 omni_range = 12.0
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_test")
+
+[node name="FpsCounter" type="CanvasLayer" parent="."]
+script = ExtResource("4_fps")

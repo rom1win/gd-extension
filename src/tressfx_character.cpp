@@ -112,7 +112,7 @@ void TressFXCharacter::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_gravity_magnitude", "v"), &TressFXCharacter::set_gravity_magnitude);
     ClassDB::bind_method(D_METHOD("get_gravity_magnitude"), &TressFXCharacter::get_gravity_magnitude);
-    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gravity_magnitude", PROPERTY_HINT_RANGE, "0.0,1.0,0.001"), "set_gravity_magnitude", "get_gravity_magnitude");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gravity_magnitude", PROPERTY_HINT_RANGE, "0.0,20.0,0.01"), "set_gravity_magnitude", "get_gravity_magnitude");
 
     ClassDB::bind_method(D_METHOD("set_damping", "v"), &TressFXCharacter::set_damping);
     ClassDB::bind_method(D_METHOD("get_damping"), &TressFXCharacter::get_damping);
@@ -994,10 +994,14 @@ void TressFXCharacter::register_hair_description(const TressFXHairNode::TressFXO
 }
 
 void TressFXCharacter::register_collision_description(const TressFXHairNode::TressFXCollisionMeshDescription &desc, TressFXCollisionNode *node) {
-    // Dedupe by tfx_mesh_file to avoid duplicate registrations.
+    // Dedupe by tfx_mesh_file (or, when that's empty -- body_mesh_path-only
+    // registration -- by body_mesh_path) to avoid duplicate registrations
+    // without treating two distinct mesh-only collision nodes as the same.
     for (const auto &existing : m_collisionDescriptions) {
-        if (existing.tfx_mesh_file == desc.tfx_mesh_file) {
-            UtilityFunctions::print(String("TressFXCharacter: collision already registered (skipping): ") + desc.tfx_mesh_file);
+        const bool same_file = !desc.tfx_mesh_file.is_empty() && existing.tfx_mesh_file == desc.tfx_mesh_file;
+        const bool same_mesh = !desc.body_mesh_path.is_empty() && existing.body_mesh_path == desc.body_mesh_path;
+        if (same_file || same_mesh) {
+            UtilityFunctions::print(String("TressFXCharacter: collision already registered (skipping): ") + desc.tfx_mesh_file + desc.body_mesh_path);
             return;
         }
     }
@@ -1172,6 +1176,17 @@ void TressFXCharacter::load_all_assets() {
             String("] skeleton=") + (collision_skeleton ? String("OK") : String("NULL")) +
             String(" (path='") + d.skeleton_node_path + String("')"));
 
+        // Phase B follow-up: resolve the optional Godot-mesh source
+        // (character-relative, set by TressFXCollisionNode::register_to_character()).
+        MeshInstance3D* body_mesh = nullptr;
+        if (!d.body_mesh_path.is_empty()) {
+            Node* bn = get_node_or_null(NodePath(d.body_mesh_path));
+            body_mesh = Object::cast_to<MeshInstance3D>(bn);
+            if (!body_mesh) {
+                UtilityFunctions::push_warning(String("TressFXCharacter: could not resolve MeshInstance3D from body_mesh_path: ") + d.body_mesh_path);
+            }
+        }
+
         m_collisionMeshes.push_back(std::make_unique<CollisionMesh>(
             /*scene=*/m_adapterScenes.back().get(),
             /*renderPass=*/nullptr,
@@ -1181,7 +1196,8 @@ void TressFXCharacter::load_all_assets() {
             d.collisionMargin,
             /*skinNumber=*/0,
             follow.get_data(),
-            d.sdf_padding_cells));
+            d.sdf_padding_cells,
+            body_mesh));
         // Index-aligned with m_collisionMeshes: mount transform for the SDF
         // debug voxel view (see m_collisionSkeletons doc).
         m_collisionSkeletons.push_back(collision_skeleton);
