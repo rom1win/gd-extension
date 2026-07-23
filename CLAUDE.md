@@ -392,12 +392,42 @@ heart; the C++ extension around them is the product.
   `HairStrands: .ghair roots bound to body mesh (384 guide strands)` —
   bound path taken, no fallback; fallback paths print their own
   distinguishable lines.
-  REMAINING for Phase B after that: Gate B part 2 = maintainer's own rigged
-  character (they are building it: rigged, animated, combed groom); editor
-  automation (invoke Blender headless from the Godot importer instead of
-  manual CLI); hide padding strands (cosmetic tuft); per-strand authored
-  attributes (twist/width) through the .ghair path when needed for
-  feathers. Housekeeping: `test_assets/hair_test_extracted.json` is an
+  **GATE B PART 2 PASSED (2026-07-23, commit ea297ad; maintainer visual
+  check: roots glued through the full mixamo clip, hair undulates with
+  motion). GATE B IS FULLY GREEN.** Test asset: a Mixamo character
+  (`test_assets/capoiera.blend` = groomed source, keep grooming THERE;
+  `demo/Meshes/capoiera_prep.blend` = what Godot imports;
+  `demo/capoeira_test.tscn` = F6 scene, auto-plays the clip via
+  `capoeira_test.gd`). Hard-won pipeline facts, all measured:
+  - Mixamo FBX rigs carry cm scale (0.01) + 90degX rotation on the
+    Armature object. Imported raw, the sim space would be centimeters with
+    gravity pulling SIDEWAYS. `tools/prep_mixamo_blend.py` (headless)
+    bakes the full armature world matrix into rig+mesh data and rescales
+    action location keys; verified world-space bit-identical (rest AND
+    posed) against the original.
+  - Godot's skeleton model space == yup_conversion @ (Blender
+    armature-LOCAL space): Blender's glTF exporter axis-converts the JOINT
+    DATA itself, compensating on the node (measured by replicating
+    Godot's .blend import headlessly and composing glb joint transforms).
+    Extractor gained `--space armature` implementing exactly that; only an
+    identity-transform armature yields Y-up (hence the prep step).
+  - The extractor now FORCES REST pose before evaluation (files are often
+    saved posed; a Surface-Deform'ed groom evaluates deformed otherwise).
+  - Blender hair sculpted on a posed/deformed surface still extracts
+    correctly at rest (curve data is attachment-relative).
+  - Grooming workflow note ("UV maps overlap" when adding Empty Hair on
+    Mixamo bodies): add a second non-overlapping UV map (Smart UV Project)
+    used only for hair attachment; original texture UVs untouched. UVs
+    never reach Godot (binding is positional).
+  REMAINING for Phase B: `.tfx` parser keep-or-remove is now the
+  maintainer's call (gate condition met); editor automation (invoke
+  Blender headless from the Godot importer instead of manual CLI); hide
+  padding strands (35 real -> 64 padded makes the tuft prominent on sparse
+  grooms); per-strand authored attributes (twist/width) when needed for
+  feathers; per-hair-node sim params (H6 — capoeira hair reads "a little
+  rigid" on RatBoy-tuned per-character defaults: `global_stiffness` 0.408 /
+  `local_stiffness` 0.908 / `damping` 0.068 on TressFXCharacter are the
+  knobs). Housekeeping: `test_assets/hair_test_extracted.json` is an
   untracked prototype artifact (ignore or delete freely); main is 3 commits
   ahead of origin and `b-blender-pipeline` is entirely unpushed — push only
   when the maintainer asks.
